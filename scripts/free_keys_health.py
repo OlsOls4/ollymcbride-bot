@@ -35,7 +35,7 @@ _MODEL_LISTS = {
     "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1/models", FREE_MODE_GROQ_FREE_TIER_MODELS),
     "mistral": ("MISTRAL_API_KEY", "https://api.mistral.ai/v1/models", FREE_MODE_MISTRAL_FREE_TIER_MODELS),
 }
-_CHAT_PROBE = {"groq": "groq/openai/gpt-oss-20b", "mistral": "mistral/mistral-small-latest"}
+_CHAT_PROBE = {"groq": "groq/openai/gpt-oss-20b", "mistral": "mistral/mistral-medium-latest"}
 
 
 async def _search_backends(session: aiohttp.ClientSession) -> list[str]:
