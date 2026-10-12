@@ -951,6 +951,45 @@ def _write_fb_outputs(out: dict[str, Any], report: str) -> None:
         with Path(summary).open("a") as fh:
             fh.write(report + "\n")
     logger.info("ForecastBench backtest report:\n%s", report)
+    for title, body in _fb_notices(out):
+        sys.stdout.write(f"::notice title={title}::{_gh_escape(body)}\n")
+    sys.stdout.flush()
+
+
+def _gh_escape(text: str) -> str:
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _fb_notices(out: dict[str, Any], per: int = 7) -> list[tuple[str, str]]:
+    """Compact ::notice annotations (public via the check-runs API) carrying the full result table."""
+
+    def c(r: dict[str, Any], k: str, nd: int = 3) -> str:
+        v = r.get(k)
+        if v is None or v != v:
+            return "-"
+        return f"{v:+.{nd}f}[{r[k + '_lo']:+.{nd}f},{r[k + '_hi']:+.{nd}f}]"
+
+    rows = [
+        f"{r['name']} n={r['n']} B={c(r, 'brier')} L={c(r, 'log')} dB={c(r, 'd_brier')} dL={c(r, 'd_log')}"
+        for r in out["rows"]
+    ]
+    chunks = [rows[i : i + per] for i in range(0, len(rows), per)]
+    notes = [(f"FB rows {i + 1}/{len(chunks)}", "\n".join(ch)) for i, ch in enumerate(chunks)]
+    m = out["meta"]
+    keep = ("n_questions", "source_counts", "pool_after", "pool_size", "outcomes", "coverage", "weakest")
+    notes.append(("FB meta", json.dumps({k: m.get(k) for k in keep}, default=str)))
+    notes.append(
+        (
+            "FB meta 2",
+            json.dumps(
+                {k: m.get(k) for k in ("member_brier_own_n", "flash_calls_used", "minutes", "cutoffs")}, default=str
+            ),
+        )
+    )
+    errs = {k: v[:2] for k, v in out.get("errors", {}).items()}
+    if errs:
+        notes.append(("FB errors", json.dumps(errs, default=str)[:3000]))
+    return notes[:10]
 
 
 def _write_json(path: str, data: Any) -> None:
