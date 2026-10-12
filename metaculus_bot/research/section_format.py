@@ -30,6 +30,7 @@ PROVIDER_SECTION_HEADERS: dict[str, str] = {
     "timeseries_anchor": TS_ANCHOR_SECTION_HEADER,
     "prediction_market": MARKET_SNAPSHOT_SECTION_HEADER,
     "resolution_source": "## Resolution Source Snapshot",
+    "free_sources": "## Free News & Background (GDELT, Wikipedia, web search)",
     "exa": "## Web Research (Exa)",
     "perplexity": "## Web Research (Perplexity)",
     "openrouter": "## Web Research (OpenRouter)",
