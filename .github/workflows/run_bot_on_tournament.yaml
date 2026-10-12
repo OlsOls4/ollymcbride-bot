@@ -2,14 +2,13 @@ name: Forecast on new AI tournament questions
 
 on:
   workflow_dispatch:
-  # PAUSED until Test Bot passes (re-enable by uncommenting)
-#  schedule:
-#    # Split across multiple cron entries to avoid GitHub Actions silently dropping
-#    # */N schedules under runner load. Off-the-hour offsets dodge the :00 burst.
-#    # Make sure to skip already forecasted questions!
-#    - cron: "3 * * * *"  # every hour at :03
-#    - cron: "23 * * * *" # every hour at :23
-#    - cron: "43 * * * *" # every hour at :43
+  schedule:
+    # Split across multiple cron entries to avoid GitHub Actions silently dropping
+    # */N schedules under runner load. Off-the-hour offsets dodge the :00 burst.
+    # Make sure to skip already forecasted questions!
+    - cron: "3 * * * *"  # every hour at :03
+    - cron: "23 * * * *" # every hour at :23
+    - cron: "43 * * * *" # every hour at :43
 
 # Add concurrency group to prevent parallel runs
 concurrency:
