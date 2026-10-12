@@ -23,6 +23,8 @@ from google import genai
 from google.genai import types as genai_types
 
 from metaculus_bot.constants import (
+    FREE_MODE_GEMINI_GROUNDING_MODEL,
+    GEMINI_NO_THINKING_LEVEL_PREFIX,
     GEMINI_SEARCH_DEFAULT_MODEL,
     GEMINI_SEARCH_HTTP_ATTEMPTS,
     GEMINI_SEARCH_HTTP_TIMEOUT_MS,
@@ -31,6 +33,7 @@ from metaculus_bot.constants import (
     GEMINI_SEARCH_THINKING_LEVEL,
     GEMINI_SEARCH_TIMEOUT,
     GOOGLE_API_KEY_ENV,
+    free_mode_enabled,
 )
 from metaculus_bot.prompts import web_research_prompt
 from metaculus_bot.research.bracket_groups import (
@@ -115,6 +118,10 @@ def build_gemini_client() -> genai.Client:
 
 
 def _resolve_model(model_slug: str | None) -> str:
+    # FREE_MODE pins the one model family whose Google Search grounding is free of charge; a 3.x
+    # model's grounding has no free tier, so no override may select one.
+    if free_mode_enabled():
+        return FREE_MODE_GEMINI_GROUNDING_MODEL
     return model_slug or os.getenv(GEMINI_SEARCH_MODEL_ENV, GEMINI_SEARCH_DEFAULT_MODEL)
 
 
@@ -456,7 +463,11 @@ async def invoke_gemini_grounded(
     # model truncates.
     config = genai_types.GenerateContentConfig(
         tools=tools,
-        thinking_config=gemini_thinking_config(GEMINI_SEARCH_THINKING_LEVEL),
+        # Gemini 2.x takes a thinking BUDGET, not a level, and rejects thinking_level; only the
+        # FREE_MODE grounding pin selects a 2.x model, so the paid path is unchanged.
+        thinking_config=None
+        if model.startswith(GEMINI_NO_THINKING_LEVEL_PREFIX)
+        else gemini_thinking_config(GEMINI_SEARCH_THINKING_LEVEL),
     )
 
     logger.info(f"GeminiSearch: calling {model} with grounding")
