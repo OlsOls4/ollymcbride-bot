@@ -47,10 +47,22 @@ With `FREE_MODE=true`:
   search is opt-in (`FREE_MODE_ALLOW_GEMINI_GROUNDING=true` plus `GEMINI_SEARCH_ENABLED=true`),
   because Google only grounds for free on `gemini-2.5-flash`, which newer keys may not reach.
 
+- **Free research add-on** (`metaculus_bot/research/free_sources.py`, on by default in free
+  mode): GDELT news headlines and Wikipedia background with no key, plus optional keyed web
+  search (Tavily, Exa free tier, Serper). Every source fails soft and the whole add-on is off in
+  backtests. Optional Groq Free and Mistral Free links sit just before each chain's Flash-Lite
+  floor once their keys exist. Details, verified terms and the services skipped (GitHub Models is
+  retired; Google News RSS and Cohere trial terms forbid this use) are in `docs/free-mode.md`.
+- **Zero-cost backtest**: `.github/workflows/backtest_free.yaml` (dispatch-only) runs
+  `backtest_free.py` on resolved questions with NIM and Flash-Lite members, never OpenRouter, and
+  never publishes.
+
 Repository secrets for free mode: `METACULUS_TOKEN` (required), `OPENROUTER_API_KEY`,
 `GEMINI_API_KEY` (an AI Studio key from a Google Cloud project with **no billing account linked**)
 and `NVIDIA_API_KEY` (build.nvidia.com); each LLM key is optional, but the more of them exist, the
-more free capacity the chains have. Optional: `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET`, `FRED_API_KEY`.
+more free capacity the chains have. Optional: `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET`, `FRED_API_KEY`,
+and the free-tier keys `TAVILY_API_KEY`, `EXA_FREE_API_KEY`, `SERPER_API_KEY`, `GROQ_API_KEY`,
+`MISTRAL_API_KEY` (none needs a card; see `docs/free-mode.md`).
 
 To switch to donated credits later, add the paid secrets, set `FREE_MODE: 'false'` in the
 workflows and restore upstream's research flags; with `FREE_MODE` unset the code path is the
