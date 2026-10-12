@@ -164,3 +164,17 @@ def test_variant_definitions_and_report_render() -> None:
         },
     )
     assert "| x | 3 |" in text
+
+
+def test_free_keys_health_workflow_is_dispatch_only_and_metaculus_free() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    path = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "free_keys_health.yaml"
+    text = path.read_text()
+    wf = yaml.safe_load(text)
+    triggers = wf.get("on", wf.get(True))
+    assert list(triggers) == ["workflow_dispatch"]
+    assert "METACULUS" not in text
+    assert "OPENROUTER" not in text
