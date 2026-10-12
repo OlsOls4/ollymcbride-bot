@@ -78,6 +78,9 @@ _MAX_TOLERABLE_JOB_CAP_MINUTES = 90
 # start killing healthy jobs — a red required check on a slow runner day.
 _MAX_NON_BOT_JOB_CAP_MINUTES = 60
 _MIN_JOB_CAP_MINUTES = 5
+# ollymcbride-bot fork: the FREE_MODE backtest is paced by free-tier rate limits and legitimately
+# runs for hours; it holds no OpenRouter or paid key and is dispatch-only (TestFreeBacktestWorkflow).
+_LONG_RUNNING_NON_BOT: dict[str, int] = {".github/workflows/backtest_free.yaml": 340}
 
 
 def _workflow(rel_path: str) -> dict[str, Any]:
@@ -112,6 +115,7 @@ class TestEveryJobIsCapped:
         # Pinned so a NEW workflow has to satisfy the invariants below rather than
         # silently escape them. .y*ml because both spellings are live (claude.yml).
         assert _ALL_WORKFLOWS == [
+            ".github/workflows/backtest_free.yaml",
             ".github/workflows/ci.yaml",
             ".github/workflows/fetch_diagnostic.yaml",
             ".github/workflows/forecast_notification_test.yaml",
@@ -239,7 +243,7 @@ class TestNonBotWorkflowCapsStayInBand:
     key while it does it.
     """
 
-    @pytest.mark.parametrize("rel_path", _NON_BOT_WORKFLOWS)
+    @pytest.mark.parametrize("rel_path", [p for p in _NON_BOT_WORKFLOWS if p not in _LONG_RUNNING_NON_BOT])
     def test_job_caps_sit_between_the_floor_and_githubs_default(self, rel_path: str) -> None:
         for job_name, job in _workflow(rel_path)["jobs"].items():
             cap = job["timeout-minutes"]
@@ -254,6 +258,7 @@ class TestNonBotWorkflowCapsStayInBand:
         # Complement of the pinned full set: a new non-bot workflow lands in the band
         # check above rather than escaping both parametrizations.
         assert _NON_BOT_WORKFLOWS == [
+            ".github/workflows/backtest_free.yaml",
             ".github/workflows/ci.yaml",
             ".github/workflows/fetch_diagnostic.yaml",
             ".github/workflows/forecast_notification_test.yaml",
@@ -433,3 +438,28 @@ class TestEveryBotWorkflowRunsInFreeMode:
         assert env.get("GOOGLE_API_KEY") == "${{ secrets.GEMINI_API_KEY }}"
         for key in ("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "METACULUS_TOKEN"):
             assert env.get(key) == f"${{{{ secrets.{key} }}}}", f"{rel_path} does not wire {key}"
+
+
+class TestFreeBacktestWorkflow:
+    """ollymcbride-bot fork: the FREE_MODE backtest is dispatch-only, quota-safe and never publishes."""
+
+    rel_path = ".github/workflows/backtest_free.yaml"
+
+    def test_dispatch_only(self) -> None:
+        parsed: Any = yaml.safe_load((_REPO_ROOT / self.rel_path).read_text())
+        triggers: Any = parsed.get("on", parsed.get(True))
+        assert sorted(triggers) == ["workflow_dispatch"]
+
+    def test_no_openrouter_or_paid_secret(self) -> None:
+        raw = (_REPO_ROOT / self.rel_path).read_text()
+        for secret in ("OPENROUTER_API_KEY", *TestEveryBotWorkflowRunsInFreeMode._PAID_SECRETS):
+            assert f"secrets.{secret}" not in raw, f"{self.rel_path} wires {secret}"
+
+    def test_free_mode_on_and_job_capped(self) -> None:
+        wf = _workflow(self.rel_path)
+        for job in wf["jobs"].values():
+            assert _MIN_JOB_CAP_MINUTES <= job["timeout-minutes"] <= _LONG_RUNNING_NON_BOT[self.rel_path]
+        steps = [st for st in _steps(wf) if "backtest_free.py" in str(st.get("run", ""))]
+        assert len(steps) == 1
+        assert steps[0]["env"]["FREE_MODE"] == "true"
+        assert "main.py" not in (_REPO_ROOT / self.rel_path).read_text()
