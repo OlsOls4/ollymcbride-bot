@@ -201,7 +201,8 @@ def test_builder_returns_free_chain_in_free_mode(free_env: pytest.MonkeyPatch) -
         extra_body={"provider": {"require_parameters": True}},
     )
     assert isinstance(llm, FreeModelChainLlm)
-    assert [link.model for link in llm.links] == list(FREE_MODE_UTILITY_CHAIN)
+    # free_env sets no GROQ_API_KEY, so the optional Groq utility link is dropped.
+    assert [link.model for link in llm.links] == [m for m in FREE_MODE_UTILITY_CHAIN if not m.startswith("groq/")]
     for link in llm.links:
         assert link.litellm_kwargs["response_format"] is _Schema
         assert link.litellm_kwargs["timeout"] == 30
@@ -402,3 +403,67 @@ def test_every_llm_the_cli_wires_is_a_free_chain_under_free_mode() -> None:
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip().endswith("OK")
+
+
+# --- optional Groq / Mistral free tiers (added 2026-10-12) ---
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "groq/openai/gpt-oss-120b",
+        "groq/openai/gpt-oss-20b",
+        "groq/qwen/qwen3.8-27b",
+        "mistral/mistral-large-latest",
+        "mistral/mistral-medium-latest",
+    ],
+)
+def test_groq_and_mistral_free_models_allowed(model: str) -> None:
+    assert_free_model(model)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "groq/moonshotai/kimi-k3-0905",
+        "groq/compound",
+        "mistral/codestral-2508",
+        "github/openai/gpt-5",
+        "cohere/command-a",
+    ],
+)
+def test_groq_and_mistral_off_list_and_unwired_providers_refused(model: str) -> None:
+    with pytest.raises(NotFreeModelError):
+        assert_free_model(model)
+
+
+def test_groq_and_mistral_links_drop_without_their_keys(free_env: pytest.MonkeyPatch) -> None:
+    free_env.delenv("GROQ_API_KEY", raising=False)
+    free_env.delenv("MISTRAL_API_KEY", raising=False)
+    for chain in FREE_MODE_FORECASTER_CHAINS:
+        built = build_free_chain(chain, role="x", timeout=10, max_tokens=100)
+        assert not any(link.model.startswith(("groq/", "mistral/")) for link in built.links)
+
+
+def test_groq_link_uses_its_key_and_caps_max_tokens(free_env: pytest.MonkeyPatch) -> None:
+    free_env.setenv("GROQ_API_KEY", "gq-test")
+    chain = build_free_chain(("groq/openai/gpt-oss-120b",), role="x", timeout=10, max_tokens=999_999)
+    assert chain.links[0].litellm_kwargs["api_key"] == "gq-test"
+    assert chain.links[0].litellm_kwargs["max_tokens"] == free_mode.FREE_MODE_GROQ_MAX_TOKENS
+
+
+def test_groq_daily_cap_marks_bucket_exhausted() -> None:
+    exc = litellm.RateLimitError(
+        message="Rate limit reached for model `openai/gpt-oss-120b` on requests per day (RPD): Limit 1000",
+        llm_provider="groq",
+        model="groq/openai/gpt-oss-120b",
+    )
+    assert free_mode._classify_and_mark("groq/openai/gpt-oss-120b", exc) == "daily_quota"
+    assert "groq" in free_mode._EXHAUSTED
+
+
+def test_groq_and_mistral_sit_before_the_floor_never_as_slot_leads() -> None:
+    for chain in FREE_MODE_FORECASTER_CHAINS:
+        assert not chain[0].startswith(("groq/", "mistral/"))
+        extras = [i for i, m in enumerate(chain) if m.startswith(("groq/", "mistral/"))]
+        assert all(i == len(chain) - 2 for i in extras)
