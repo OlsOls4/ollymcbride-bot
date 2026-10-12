@@ -692,18 +692,28 @@ async def _forecast_members(
     for bot in bots:
         assert bot.publish_reports_to_metaculus is False
 
+    deadline = time.monotonic() + args.member_timeout_min * 60
+
     async def _one(bot: Any) -> tuple[str, list[Any]]:
+        # Small batches: the bot's per-forecaster soft deadline (600 s) starts when a question
+        # starts, so handing a member all its questions at once lets free-tier pacing queues
+        # push the late ones past it (run 38322653424: 111 SOFT_DEADLINE drops).
         qs = member_questions[bot.name]
-        if not qs:
-            return bot.name, []
-        try:
-            reports = await asyncio.wait_for(
-                bot.forecast_questions(qs, return_exceptions=True), timeout=args.member_timeout_min * 60
-            )
-        except TimeoutError:
-            logger.warning("Member %s hit its %d-minute cap", bot.name, args.member_timeout_min)
-            reports = []
-        return bot.name, list(reports)
+        reports: list[Any] = []
+        for i in range(0, len(qs), max(1, args.member_batch)):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                logger.warning("Member %s hit the %d-minute cap", bot.name, args.member_timeout_min)
+                break
+            try:
+                got = await asyncio.wait_for(
+                    bot.forecast_questions(qs[i : i + args.member_batch], return_exceptions=True), timeout=left
+                )
+            except TimeoutError:
+                logger.warning("Member %s hit the %d-minute cap", bot.name, args.member_timeout_min)
+                break
+            reports.extend(got)
+        return bot.name, reports
 
     results = await asyncio.gather(*(_one(b) for b in bots))
     forecasts: dict[str, dict[int, float]] = {}
@@ -817,7 +827,9 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
 
     specs: list[dict[str, Any]] = []
     for m in members:
-        links = (m,) if m == FLASH_MODEL else (m, m)  # Flash: no retry, so calls <= questions
+        # Flash: no retry, so calls <= questions. NIM: two retries (NIM 429s under load are
+        # transient; run 38322653424 lost 35 of 60 kimi-k3 questions to back-to-back 429s).
+        links = (m,) if m == FLASH_MODEL else ((m, m, m) if m.startswith("nvidia_nim/") else (m, m))
         chain = build_free_chain(
             links,
             role=f"forecaster:backtest:{short_name(m)}",
@@ -1029,6 +1041,7 @@ def _parser() -> argparse.ArgumentParser:
         help="ForecastBench: sample only questions resolved on/after this (latest effective cutoff of the live leads)",
     )
     p.add_argument("--member-timeout-min", type=int, default=240)
+    p.add_argument("--member-batch", type=int, default=3, help="ForecastBench: questions per member in flight")
     p.add_argument("--seed", type=int, default=20261012)
     return p
 
