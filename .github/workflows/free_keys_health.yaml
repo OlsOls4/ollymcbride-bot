@@ -1,0 +1,45 @@
+name: Free key health (optional free keys, infra only)
+
+# workflow_dispatch ONLY. One tiny request per optional free provider (Tavily, Exa, Serper,
+# Groq, Mistral) through the bot's own code paths, to show whether each key/endpoint works from
+# a GitHub runner. Prints statuses and counts only (never keys), touches no Metaculus question
+# and publishes nothing. Roughly 1 search credit each on Tavily/Exa/Serper and 1 short chat
+# call each on Groq/Mistral free tiers.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        timeout-minutes: 5
+      - uses: astral-sh/setup-uv@v7
+        timeout-minutes: 5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: uv sync --no-dev --frozen
+      - name: Probe free keys
+        timeout-minutes: 5
+        env:
+          FREE_MODE: "true"
+          PYTHONUNBUFFERED: "1"
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          EXA_FREE_API_KEY: ${{ secrets.EXA_FREE_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: uv run --frozen --no-dev python scripts/free_keys_health.py
