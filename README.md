@@ -19,6 +19,44 @@ each model's reasoning. Originally forked from
 unattended from GitHub Actions. 
 Uses Asknews, OpenAI native search, Gemini native search, and a custom agentic gap-fill research pass.
 
+## Free mode (ollymcbride-bot)
+
+This fork ([OlsOls4/ollymcbride-bot](https://github.com/OlsOls4/ollymcbride-bot)) adds a zero-cost
+`FREE_MODE` so the bot can enter the Metaculus bot tournaments before any donated credits arrive.
+It is a fork of [No-Stream/nostreambot-metaculus-bot](https://github.com/No-Stream/nostreambot-metaculus-bot)
+by No-Stream, used under its MIT licence (see `LICENSE`, unchanged). All credit for the pipeline
+goes upstream; the fork only changes model routing and workflow configuration.
+
+With `FREE_MODE=true`:
+
+- **Every LLM call goes to a free tier**: OpenRouter models whose id ends in `:free`, Google AI
+  Studio free-tier Gemini models, and (optional) NVIDIA NIM developer endpoints. A build-time check
+  (`metaculus_bot/free_mode.py: assert_free_model`) refuses any OpenRouter slug without `:free` and
+  any Gemini id not on the free-tier list.
+- **Each ensemble slot is a fallback chain** (`FREE_MODE_FORECASTER_CHAINS` in `constants.py`):
+  strongest free model first, then other providers on 429, daily quota, 5xx, timeout or an empty
+  reply, ending on Gemini Flash-Lite, so every question still gets a forecast. Calls are paced
+  under each provider's free RPM, and a provider that reports its daily cap is skipped for the rest
+  of the run. Four slots by default (`FREE_MODE_ENSEMBLE_SIZE`, max 5), aggregated by the existing
+  median; stacking stays off. A forecast answered by a fallback says so in the published comment.
+- **Paid research is hard-disabled in code**: OpenAI native search, gap-fill v1/v2 (Exa and paid
+  reads), the Gemini `url_context` paid rung, Perplexity and Exa primaries, and the AskNews to
+  Perplexity fallback. Free research stays on: prediction-market snapshots, resolution-source
+  fetches (free rungs), yfinance/FRED (FRED only with a free `FRED_API_KEY`) and the time-series
+  anchor. AskNews is used only when `ASKNEWS_CLIENT_ID` and `ASKNEWS_SECRET` exist. Gemini grounded
+  search is opt-in (`FREE_MODE_ALLOW_GEMINI_GROUNDING=true` plus `GEMINI_SEARCH_ENABLED=true`),
+  because Google only grounds for free on `gemini-2.5-flash`, which newer keys may not reach.
+
+Repository secrets for free mode: `METACULUS_TOKEN` (required), `OPENROUTER_API_KEY`,
+`GEMINI_API_KEY` (an AI Studio key from a Google Cloud project with **no billing account linked**)
+and `NVIDIA_API_KEY` (build.nvidia.com); each LLM key is optional, but the more of them exist, the
+more free capacity the chains have. Optional: `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET`, `FRED_API_KEY`.
+
+To switch to donated credits later, add the paid secrets, set `FREE_MODE: 'false'` in the
+workflows and restore upstream's research flags; with `FREE_MODE` unset the code path is the
+upstream one, unchanged. The Metaculus Cup workflow's schedule is removed in this fork and the
+Mantic and `@claude` workflows are deleted.
+
 ## How it did
 
 The bot competed as `nostreambot` in the Fall 2025+ FutureEval bot tournaments. 
