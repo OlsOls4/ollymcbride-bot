@@ -44,6 +44,7 @@ from metaculus_bot.constants import (
     RESOLUTION_SOURCE_ENABLED_ENV,
     TS_ANCHOR_ENABLED_ENV,
     env_flag_enabled,
+    free_mode_enabled,
 )
 from metaculus_bot.fallback_openrouter import _record_deprecation_if_matched
 from metaculus_bot.llm_retry import llm_error_fields
@@ -506,6 +507,10 @@ class ResearchOrchestrator:
         published comment and in the archive.
         """
         # Ordered by cost, not index quality. See docs/research.md "AskNews fallback (primary-only)".
+        if free_mode_enabled():
+            # Every rung below bills (Perplexity via OpenRouter, Perplexity, Exa).
+            logger.info("FREE_MODE: skipping the paid AskNews research fallback")
+            return (None, None)
         try:
             if os.getenv(OPENROUTER_API_KEY_ENV):
                 logger.info("Falling back to openrouter/perplexity for research")
