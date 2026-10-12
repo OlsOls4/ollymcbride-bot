@@ -51,6 +51,7 @@ from metaculus_bot.llm_retry import llm_error_fields
 from metaculus_bot.prompts import OUTSIDE_VENUE_MARKET_ODDS_POLICY
 from metaculus_bot.research import degradation_views
 from metaculus_bot.research.asknews_summarization import summarize_asknews
+from metaculus_bot.research.free_sources import free_research_enabled, free_sources_provider
 from metaculus_bot.research.gap_fill_stages import run_gap_fill_passes
 from metaculus_bot.research.provider_diagnostics import (
     SUCCEEDED_STATUSES,
@@ -309,6 +310,11 @@ class ResearchOrchestrator:
             )
 
             providers.append((prediction_market_provider(is_benchmarking=self._is_benchmarking), "prediction_market"))
+
+        if free_research_enabled():
+            # FREE_MODE add-on (GDELT news, Wikipedia background, optional keyed web search).
+            # Self-gated: returns "" under is_benchmarking, so backtests never see live content.
+            providers.append((free_sources_provider(is_benchmarking=self._is_benchmarking), "free_sources"))
 
         if env_flag_enabled(RESOLUTION_SOURCE_ENABLED_ENV):
             from metaculus_bot.research.resolution_source import (  # noqa: PLC0415  # HARNESS-SCAN-EXEMPT-function-level-import  # gated aiohttp/trafilatura provider
