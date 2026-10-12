@@ -48,6 +48,7 @@ from metaculus_bot.constants import (
     PERPLEXITY_RESEARCH_MODEL_VIA_OPENROUTER,
     PERPLEXITY_WALL_TIMEOUT,
     RESEARCH_PROVIDER_ENV,
+    free_mode_enabled,
 )
 from metaculus_bot.credit_telemetry import llm_call_metadata, plain_llm_key_alias
 from metaculus_bot.fallback_openrouter import build_llm_with_openrouter_fallback
@@ -578,6 +579,28 @@ def _forced_provider_choice(
     return None
 
 
+async def _empty_primary(_: MetaculusQuestion) -> str:
+    return ""
+
+
+# Every primary below AskNews in the priority order bills per call.
+_PAID_PRIMARY_PROVIDERS: frozenset[str] = frozenset({"exa", "perplexity", "openrouter"})
+
+
+def _free_mode_provider_choice(forced: str | None) -> tuple[ResearchCallable, str]:
+    """FREE_MODE primary: AskNews when its secrets exist (sponsored), else no primary at all.
+
+    Exa, Perplexity and Perplexity-via-OpenRouter all bill, so they are never selected, forced
+    or not; the free add-on providers (markets, resolution sources, financial data) carry the
+    research instead.
+    """
+    if forced and forced.strip().lower() in _PAID_PRIMARY_PROVIDERS:
+        logger.warning(f"FREE_MODE: ignoring RESEARCH_PROVIDER={forced} (paid provider)")
+    if os.getenv(ASKNEWS_CLIENT_ID_ENV) and os.getenv(ASKNEWS_SECRET_ENV):
+        return _asknews_provider(), "asknews"
+    return _empty_primary, "none"
+
+
 def _auto_provider_choice(
     *,
     default_llm: GeneralLlm | None,
@@ -634,6 +657,8 @@ def choose_provider_with_name(
     through to the priority order above.
     """
     forced = os.getenv(RESEARCH_PROVIDER_ENV)
+    if free_mode_enabled():
+        return _free_mode_provider_choice(forced)
     if forced:
         choice = _forced_provider_choice(
             forced.strip().lower(),
