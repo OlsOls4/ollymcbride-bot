@@ -44,12 +44,33 @@ _REMOVED_KEYS = (
 )
 
 
-def _sanitize_environment() -> list[str]:
+def _source_from_argv(argv: list[str]) -> str:
+    for i, a in enumerate(argv):
+        if a == "--source" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--source="):
+            return a.split("=", 1)[1]
+    return "metaculus"
+
+
+def _sanitize_environment(source: str | None = None) -> list[str]:
     if os.getenv("FREE_MODE", "").strip().lower() not in ("true", "1", "yes"):
         raise SystemExit("backtest_free.py refuses to run unless FREE_MODE=true")
     removed = [k for k in list(os.environ) if k in _REMOVED_KEYS or k.startswith("OPENROUTER")]
     for k in removed:
         os.environ.pop(k, None)
+    if (source or "metaculus") == "forecastbench":
+        # ForecastBench needs no Metaculus access at all: both tokens leave the process, so this
+        # source can neither read from nor publish to Metaculus.
+        for k in ("METACULUS_TOKEN", "METACULUS_BACKTEST_TOKEN"):
+            if k in os.environ:
+                os.environ.pop(k, None)
+                removed.append(k)
+        os.environ["BACKTEST_TOKEN_SOURCE"] = "none (forecastbench)"  # noqa: S105  # a label, not a value
+        os.environ["FREE_RESEARCH_ENABLED"] = "false"
+        for flag in ("PREDICTION_MARKETS_ENABLED", "RESOLUTION_SOURCE_ENABLED", "GEMINI_SEARCH_ENABLED"):
+            os.environ[flag] = "false"
+        return removed
     # Read-only fetch token: METACULUS_BACKTEST_TOKEN (a personal, non-bot account, which the API
     # gives resolution values) wins over the bot's METACULUS_TOKEN. This script never publishes, so
     # the token is only used to read questions and their resolutions.
@@ -66,7 +87,7 @@ def _sanitize_environment() -> list[str]:
 
 
 # Imported by tests: no env mutation. Run as a script: sanitize before the bot imports below.
-_REMOVED_AT_START: list[str] = _sanitize_environment() if __name__ == "__main__" else []
+_REMOVED_AT_START: list[str] = _sanitize_environment(_source_from_argv(sys.argv)) if __name__ == "__main__" else []
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
@@ -77,20 +98,24 @@ import statistics  # noqa: E402
 import time  # noqa: E402
 from collections.abc import Iterable, Sequence  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
-from datetime import UTC, datetime  # noqa: E402
+from datetime import UTC, date, datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from typing import Any  # noqa: E402
 
 import numpy as np  # noqa: E402
-from forecasting_tools import GeneralLlm, MetaculusApi  # noqa: E402
+from forecasting_tools import BinaryQuestion, GeneralLlm, MetaculusApi  # noqa: E402
 from forecasting_tools.data_models.binary_report import BinaryReport  # noqa: E402
 from forecasting_tools.data_models.multiple_choice_report import MultipleChoiceReport  # noqa: E402
 from forecasting_tools.data_models.numeric_report import NumericReport  # noqa: E402
+from forecasting_tools.data_models.questions import QuestionState  # noqa: E402
 
+from metaculus_bot import constants as constants_module  # noqa: E402
+from metaculus_bot import free_mode as free_mode_module  # noqa: E402
 from metaculus_bot import prompts as prompts_module  # noqa: E402
 from metaculus_bot.ablation.window_patch import compute_mid_window_today  # noqa: E402
 from metaculus_bot.api_preflight import verify_metaculus_api_identity  # noqa: E402
+from metaculus_bot.backtest import forecastbench as fb  # noqa: E402
 from metaculus_bot.backtest import question_prep  # noqa: E402
 from metaculus_bot.backtest.scoring import (  # noqa: E402
     mc_log_score_from_report,
@@ -123,6 +148,25 @@ DEFAULT_MEMBERS: tuple[str, ...] = (
     "gemini/gemini-3.1-flash-lite",
 )
 FLASH_MODEL = "gemini/gemini-3.8-flash"
+# Hard ceiling on Gemini 3.x Flash calls per run (the live bot shares its ~20/day free quota).
+FLASH_CALL_CAP = 24
+# ForecastBench default members: every free provider with an existing secret EXCEPT OpenRouter.
+FB_DEFAULT_MEMBERS: tuple[str, ...] = (
+    "nvidia_nim/moonshotai/kimi-k3",
+    "nvidia_nim/z-ai/glm-5.3",
+    "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+    "gemini/gemini-3.5-flash-lite",
+    "gemini/gemini-3.1-flash-lite",
+    "mistral/mistral-medium-latest",
+    "groq/openai/gpt-oss-120b",
+    "groq/qwen/qwen3.8-27b",
+)
+# Groq Free counts prompt + max_tokens against an 8K tokens-per-minute cap per model and 200K
+# tokens per day; a ~4.5K-token prompt plus the live 4,096 budget is over it. The backtest gives
+# Groq links 3,000 output tokens, spaces Groq calls 35 s apart, and caps Groq members at
+# --groq-questions so the daily token budget is not drained.
+FB_GROQ_MAX_TOKENS = 3_000
+FB_GROQ_MIN_INTERVAL_S = 35.0
 
 
 def short_name(model: str) -> str:
@@ -350,12 +394,17 @@ def _install_mid_window_dates(questions: Sequence[Any]) -> None:
     mid-window. The window block is rendered just before the status-quo line inside one f-string
     with no await in between, so the window patch records the date the ``_today_str`` patch reads."""
 
-    mids = {q.id_of_question: compute_mid_window_today(q) for q in questions}
+    _install_today_dates({q.id_of_question: compute_mid_window_today(q) for q in questions})
+
+
+def _install_today_dates(mids: dict[int, datetime]) -> None:
+    """Patch the prompts' "Today:" window block and "as of <today>" line to a per-question date."""
     original_window = prompts_module._forecasting_window_str
     last: list[datetime] = [min(mids.values())]
 
     def _window(q: Any) -> str:
-        mid = mids.get(getattr(q, "id_of_question", None))
+        qid = getattr(q, "id_of_question", None)
+        mid = mids.get(qid) if isinstance(qid, int) else None
         if mid is None:
             return original_window(q)
         last[0] = mid
@@ -468,7 +517,7 @@ async def _fetch_questions(args: argparse.Namespace) -> tuple[list[Any], dict[in
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0914, PLR0915  # one linear script
 
-    members = [m.strip() for m in args.members.split(",") if m.strip()]
+    members = [m.strip() for m in (args.members or ",".join(DEFAULT_MEMBERS)).split(",") if m.strip()]
     if any(m.startswith("openrouter/") for m in members):
         raise SystemExit("backtest_free.py never uses OpenRouter (protects the live bot's 50/day budget)")
 
@@ -585,6 +634,325 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:  # noqa: C901, PLR091
     return out
 
 
+# ---------------------------------------------------------------------------------------------
+# ForecastBench source (--source forecastbench): keyless public data, no Metaculus access
+# ---------------------------------------------------------------------------------------------
+
+
+class _CallBudgetExceededError(RuntimeError):
+    pass
+
+
+def _budgeted(chain: Any, cap: int) -> Any:
+    """Wrap ``chain.invoke`` so at most ``cap`` calls are ever made through it (hard quota guard)."""
+    used = [0]
+    original = chain.invoke
+
+    async def invoke(prompt: Any, system_prompt: str | None = None) -> str:
+        if used[0] >= cap:
+            raise _CallBudgetExceededError(f"call budget of {cap} spent for {chain.model}")
+        used[0] += 1
+        return await original(prompt, system_prompt)
+
+    object.__setattr__(chain, "invoke", invoke)
+    chain._budget_used = used  # read back for the report
+    return chain
+
+
+def _fb_binary_question(item: Any, qid: int) -> Any:
+    due = item.due_date
+    open_d = item.open_date if item.open_date and item.open_date <= due else due - timedelta(days=30)
+    close_d = item.close_date if item.close_date and item.close_date > due else due + timedelta(days=30)
+    background = "\n\n".join(x for x in (item.source_intro, item.background) if x)
+    return BinaryQuestion(
+        question_text=item.question,
+        id_of_question=qid,
+        id_of_post=qid,
+        state=QuestionState.OPEN,
+        background_info=background or None,
+        resolution_criteria=item.resolution_criteria or None,
+        fine_print="",
+        open_time=fb.as_datetime(open_d),
+        scheduled_resolution_time=fb.as_datetime(close_d),
+        close_time=fb.as_datetime(close_d),
+    )
+
+
+async def _forecast_members(
+    *,
+    specs: list[dict[str, Any]],
+    member_questions: dict[str, list[Any]],
+    research_cache: dict[int, str],
+    args: argparse.Namespace,
+) -> tuple[dict[str, dict[int, float]], dict[str, list[str]]]:
+    config = dict(BENCHMARK_BOT_CONFIG)
+    config["publish_reports_to_metaculus"] = False
+    config["is_benchmarking"] = True
+    bots = create_individual_bots(specs, DEFAULT_HELPER_LLMS, config, batch_size=4, research_cache=research_cache)
+    for bot in bots:
+        assert bot.publish_reports_to_metaculus is False
+
+    async def _one(bot: Any) -> tuple[str, list[Any]]:
+        qs = member_questions[bot.name]
+        if not qs:
+            return bot.name, []
+        try:
+            reports = await asyncio.wait_for(
+                bot.forecast_questions(qs, return_exceptions=True), timeout=args.member_timeout_min * 60
+            )
+        except TimeoutError:
+            logger.warning("Member %s hit its %d-minute cap", bot.name, args.member_timeout_min)
+            reports = []
+        return bot.name, list(reports)
+
+    results = await asyncio.gather(*(_one(b) for b in bots))
+    forecasts: dict[str, dict[int, float]] = {}
+    errors: dict[str, list[str]] = {}
+    for name, reports in results:
+        got: dict[int, float] = {}
+        for r in reports:
+            if isinstance(r, BaseException):
+                errors.setdefault(name, []).append(f"{type(r).__name__}: {str(r)[:160]}")
+                continue
+            if isinstance(r, BinaryReport) and r.question.id_of_question is not None:
+                got[r.question.id_of_question] = float(r.prediction)
+        forecasts[name] = got
+    return forecasts, errors
+
+
+def _fmt_ci(v: float | None, lo: float | None, hi: float | None, *, nd: int = 3, signed: bool = False) -> str:
+    if v is None or v != v:
+        return "-"
+    f = f"{{:+.{nd}f}}" if signed else f"{{:.{nd}f}}"
+    return f"{f.format(v)} [{f.format(lo)}, {f.format(hi)}]"
+
+
+def render_fb_report(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
+    lines = [
+        "## FREE_MODE backtest on ForecastBench (market-source binary questions, no research)",
+        "",
+        f"Sample: {meta['n_questions']} questions {meta['source_counts']} (seed {meta['seed']}), resolved "
+        f"{meta['pool_after']} or later (pool {meta['pool_size']}), outcomes {meta['outcomes']}. "
+        '"Today" in every prompt = the question set\'s forecast due date.',
+        "Brier: lower is better. Log score = mean ln(p of the outcome), p clipped to [0.001, 0.999]; higher is "
+        "better, 0.5 gives -0.693. [95% bootstrap CI]. Δ = paired difference vs the reference on shared "
+        f"questions (`{meta['reference']}`); Brier Δ < 0 and log Δ > 0 mean better than the reference.",
+        "",
+        "| Variant | n | Brier | Log score | ΔBrier vs ref | ΔLog vs ref |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['name']} | {r['n']} | {_fmt_ci(r['brier'], r['brier_lo'], r['brier_hi'])} | "
+            f"{_fmt_ci(r['log'], r['log_lo'], r['log_hi'])} | "
+            + (
+                "ref"
+                if r["name"] == meta["reference"]
+                else _fmt_ci(r.get("d_brier"), r.get("d_brier_lo"), r.get("d_brier_hi"), signed=True)
+            )
+            + " | "
+            + (
+                "ref"
+                if r["name"] == meta["reference"]
+                else _fmt_ci(r.get("d_log"), r.get("d_log_lo"), r.get("d_log_hi"), signed=True)
+            )
+            + " |"
+        )
+    lines += [
+        "",
+        f"Coverage (forecasts / eligible questions sent): {meta['coverage']}",
+        f"Chains simulated (OpenRouter links removed; a link with no forecast falls through): {meta['chains']}",
+        f"Weakest chain member dropped: {meta.get('weakest')}",
+        "Effective training cutoffs (questions resolved before it are excluded for that member): "
+        + "; ".join(f"{k}: {v}" for k, v in meta["cutoffs"].items()),
+        "",
+        fb.FB_ATTRIBUTION,
+    ]
+    return "\n".join(lines)
+
+
+async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0914, PLR0915  # one linear script
+    members = [m.strip() for m in (args.members or ",".join(FB_DEFAULT_MEMBERS)).split(",") if m.strip()]
+    if any(m.startswith("openrouter/") for m in members):
+        raise SystemExit("backtest_free.py never uses OpenRouter (protects the live bot's 50/day budget)")
+    if args.flash_questions > 0 and FLASH_MODEL not in members:
+        members.append(FLASH_MODEL)
+    unknown = [m for m in members if fb.effective_cutoff(m) is None]
+    if unknown:
+        raise SystemExit(f"No training cutoff recorded for {unknown}; add it to forecastbench.MODEL_CUTOFFS first")
+
+    floor = date.fromisoformat(args.resolved_after)
+    pool_after = max(floor, date.fromisoformat(args.fb_pool_after))
+    items, diag = fb.load_forecastbench(
+        since=date.fromisoformat(args.fb_since), until=datetime.now(UTC).date(), resolved_after=floor
+    )
+    items = fb.dedupe_by_question(items, seed=args.seed)
+    pool = [it for it in items if it.resolution_date >= pool_after]
+    sample = fb.stratified_sample(pool, args.num_questions, seed=args.seed)
+    if len(sample) < 10:
+        raise SystemExit(
+            f"Only {len(sample)} ForecastBench questions after filtering; widen --fb-since/--fb-pool-after"
+        )
+    _write_json("backtests/forecastbench_fetch.json", {**diag, "joined": len(items), "pool": len(pool)})
+
+    qid_of = {it.fb_id: 9_000_000 + k for k, it in enumerate(sample)}
+    item_of = {qid_of[it.fb_id]: it for it in sample}
+    questions = {qid: _fb_binary_question(it, qid) for qid, it in item_of.items()}
+    _install_today_dates({qid: fb.as_datetime(it.due_date) for qid, it in item_of.items()})
+    apply_scoring_patches()
+    research_cache = dict.fromkeys(questions, NO_RESEARCH_TEXT)
+
+    # Quota guards for the shared free tiers.
+    free_mode_module.FREE_MODE_GROQ_MAX_TOKENS = FB_GROQ_MAX_TOKENS
+    constants_module.FREE_MODE_MIN_INTERVAL_S["groq"] = FB_GROQ_MIN_INTERVAL_S
+
+    member_questions: dict[str, list[Any]] = {}
+    for m in members:
+        qs = [questions[qid] for qid, it in item_of.items() if fb.eligible_for(m, it)]
+        if m == FLASH_MODEL:
+            qs = qs[: args.flash_questions]
+        elif m.startswith("groq/"):
+            qs = qs[: args.groq_questions]
+        member_questions[m] = qs
+
+    specs: list[dict[str, Any]] = []
+    for m in members:
+        links = (m,) if m == FLASH_MODEL else (m, m)  # Flash: no retry, so calls <= questions
+        chain = build_free_chain(
+            links,
+            role=f"forecaster:backtest:{short_name(m)}",
+            timeout=FREE_MODE_FORECASTER_LINK_TIMEOUT_S,
+            max_tokens=FREE_MODE_FORECASTER_MAX_TOKENS,
+        )
+        if m == FLASH_MODEL:
+            chain = _budgeted(chain, min(FLASH_CALL_CAP, args.flash_questions))
+        specs.append({"name": m, "forecaster": chain})
+
+    started = time.monotonic()
+    raw_forecasts, errors = await _forecast_members(
+        specs=specs, member_questions=member_questions, research_cache=research_cache, args=args
+    )
+    # Keyed by ForecastBench id from here on.
+    forecasts: dict[str, dict[str, float]] = {
+        m: {item_of[qid].fb_id: p for qid, p in got.items()} for m, got in raw_forecasts.items()
+    }
+    outcomes = {it.fb_id: it.outcome for it in sample}
+    coverage = {short_name(m): f"{len(forecasts.get(m, {}))}/{len(member_questions[m])}" for m in members}
+
+    variants: list[fb.BinaryVariant] = [
+        fb.BinaryVariant(f"single:{short_name(m)}", dict(forecasts.get(m, {}))) for m in members
+    ]
+    live_chains = [
+        tuple(link for link in chain if not link.startswith("openrouter/"))
+        for chain in constants_module.FREE_MODE_FORECASTER_CHAINS[: constants_module.free_mode_ensemble_size()]
+    ]
+
+    def chain_variant(name: str, agg: str, drop: frozenset[str] = frozenset()) -> fb.BinaryVariant:
+        preds: dict[str, float] = {}
+        for it in sample:
+            slots = fb.simulate_chains(live_chains, forecasts, it.fb_id, drop=drop)
+            if slots:
+                preds[it.fb_id] = fb.AGGREGATORS[agg](slots)
+        return fb.BinaryVariant(name, preds)
+
+    chain_med = chain_variant("live_chain_median", "median")
+    variants += [chain_med, chain_variant("live_chain_mean", "mean")]
+    # Weakest member among those that actually served a slot, by its own mean Brier.
+    served: set[str] = set()
+    for chain in live_chains:
+        for it in sample:
+            first = next((m for m in chain if it.fb_id in forecasts.get(m, {})), None)
+            if first is not None:
+                served.add(first)
+    member_brier: dict[str, float] = {
+        m: statistics.fmean(fb.brier(p, outcomes[q]) for q, p in forecasts[m].items())
+        for m in served
+        if forecasts.get(m)
+    }
+    weakest: str | None = max(member_brier, key=lambda m: member_brier[m]) if len(member_brier) >= 2 else None
+    if weakest:
+        drop = frozenset({weakest})
+        variants += [
+            chain_variant(f"live_chain_median_minus_{short_name(weakest)}", "median", drop),
+            chain_variant(f"live_chain_mean_minus_{short_name(weakest)}", "mean", drop),
+        ]
+    full = [m for m in members if m != FLASH_MODEL and not m.startswith("groq/")]
+    for agg in ("median", "mean"):
+        preds = {}
+        for it in sample:
+            ps = [forecasts[m][it.fb_id] for m in full if it.fb_id in forecasts.get(m, {})]
+            if len(ps) >= 3:
+                preds[it.fb_id] = fb.AGGREGATORS[agg](ps)
+        variants.append(fb.BinaryVariant(f"all_members_{agg}(>=3)", preds))
+    base_rate = statistics.fmean(1.0 if o else 0.0 for o in outcomes.values())
+    variants += [
+        fb.BinaryVariant(f"baseline:base_rate({base_rate:.3f}, in-sample)", dict.fromkeys(outcomes, base_rate)),
+        fb.BinaryVariant("baseline:always_0.5", dict.fromkeys(outcomes, 0.5)),
+        fb.BinaryVariant(
+            "market/crowd at freeze (ForecastBench freeze_datetime_value)",
+            {it.fb_id: it.market_value for it in sample if it.market_value is not None},
+        ),
+    ]
+    rows = fb.summarize_variants(variants, outcomes, reference="live_chain_median", seed=args.seed)
+
+    src_counts: dict[str, int] = {}
+    for it in sample:
+        src_counts[it.source] = src_counts.get(it.source, 0) + 1
+    meta = {
+        "n_questions": len(sample),
+        "source_counts": src_counts,
+        "seed": args.seed,
+        "pool_after": pool_after.isoformat(),
+        "pool_size": len(pool),
+        "outcomes": {"yes": sum(outcomes.values()), "no": len(outcomes) - sum(outcomes.values())},
+        "reference": "live_chain_median",
+        "coverage": coverage,
+        "chains": [[short_name(m) for m in c] for c in live_chains],
+        "weakest": short_name(weakest) if weakest else None,
+        "member_brier_own_n": {short_name(m): round(v, 4) for m, v in member_brier.items()},
+        "cutoffs": {
+            short_name(m): f"{c.cutoff.isoformat()} ({c.kind})"
+            for m in members
+            if (c := fb.effective_cutoff(m)) is not None
+        },
+        "flash_calls_used": next(
+            (getattr(s["forecaster"], "_budget_used", [None])[0] for s in specs if s["name"] == FLASH_MODEL), 0
+        ),
+        "minutes": round((time.monotonic() - started) / 60, 1),
+        "removed_env_keys": _REMOVED_AT_START,
+        "attribution": fb.FB_ATTRIBUTION,
+    }
+    report = render_fb_report(rows, meta)
+    per_question = [
+        {
+            "fb_id": it.fb_id,
+            "source": it.source,
+            "url": it.url,
+            "due_date": it.due_date.isoformat(),
+            "resolution_date": it.resolution_date.isoformat(),
+            "outcome": int(it.outcome),
+            "market": it.market_value,
+            **{short_name(m): forecasts.get(m, {}).get(it.fb_id) for m in members},
+            "live_chain_median": chain_med.preds.get(it.fb_id),
+        }
+        for it in sample
+    ]
+    out = {"meta": meta, "rows": rows, "errors": {k: v[:10] for k, v in errors.items()}, "per_question": per_question}
+    _write_fb_outputs(out, report)
+    return out
+
+
+def _write_fb_outputs(out: dict[str, Any], report: str) -> None:
+    Path("backtests").mkdir(exist_ok=True)
+    Path("backtests/fb_backtest_results.json").write_text(json.dumps(out, indent=2, default=str))
+    Path("backtests/fb_backtest_report.md").write_text(report + "\n")
+    summary = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary:
+        with Path(summary).open("a") as fh:
+            fh.write(report + "\n")
+    logger.info("ForecastBench backtest report:\n%s", report)
+
+
 def _write_json(path: str, data: Any) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(data, indent=2, default=str))
@@ -602,6 +970,7 @@ def _write_outputs(out: dict[str, Any], report: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--source", choices=("metaculus", "forecastbench"), default="metaculus")
     p.add_argument("--num-questions", type=int, default=36)
     p.add_argument(
         "--tournaments", default="fall-futureeval-2026,summer-futureeval-2026,CURRENT_MINIBENCH,metaculus-cup-fall-2026"
@@ -609,8 +978,17 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--resolved-after", default="2026-06-01")
     p.add_argument("--per-tournament-cap", type=int, default=60)
     p.add_argument("--min-forecasters", type=int, default=5)
-    p.add_argument("--members", default=",".join(DEFAULT_MEMBERS))
+    p.add_argument("--members", default="", help="Comma-separated free model ids; empty = the source's default")
     p.add_argument("--flash-questions", type=int, default=0, help="Gemini 3.8 Flash member on the first K questions")
+    p.add_argument(
+        "--groq-questions", type=int, default=20, help="ForecastBench: Groq members on the first K questions"
+    )
+    p.add_argument("--fb-since", default="2026-01-04", help="ForecastBench: earliest question-set due date")
+    p.add_argument(
+        "--fb-pool-after",
+        default="2026-08-15",
+        help="ForecastBench: sample only questions resolved on/after this (latest effective cutoff of the live leads)",
+    )
     p.add_argument("--member-timeout-min", type=int, default=240)
     p.add_argument("--seed", type=int, default=20261012)
     return p
@@ -620,9 +998,15 @@ def main() -> None:
 
     configure_benchmark_logging(log_dir="backtests")
     args = _parser().parse_args()
-    if args.flash_questions > 25:
-        raise SystemExit("--flash-questions is capped at 25 to protect the live bot's Gemini Flash quota")
+    if args.flash_questions > FLASH_CALL_CAP:
+        raise SystemExit(
+            f"--flash-questions is capped at {FLASH_CALL_CAP} to protect the live bot's Gemini Flash quota"
+        )
     logger.info("Removed from env for this run (names only): %s", _REMOVED_AT_START)
+    if args.source == "forecastbench":
+        logger.info("Source: ForecastBench (keyless public data; no Metaculus token in the process)")
+        asyncio.run(run_forecastbench(args))
+        return
     logger.info("Metaculus fetch token (read-only): %s", os.getenv("BACKTEST_TOKEN_SOURCE", "unknown"))
     verify_metaculus_api_identity()
     asyncio.run(run(args))
