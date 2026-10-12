@@ -229,3 +229,13 @@ def test_workflow_forecastbench_path_needs_no_metaculus_token() -> None:
 def test_attribution_text() -> None:
     assert "CC BY-SA 4.0" in fb.FB_ATTRIBUTION
     assert "forecastbench-datasets" in fb.FB_ATTRIBUTION
+
+
+def test_notices_carry_every_row_within_the_annotation_cap() -> None:
+    rows = [{"name": f"v{i}", "n": 3, "brier": 0.2, "brier_lo": 0.1, "brier_hi": 0.3} for i in range(19)]
+    out = {"rows": rows, "meta": {"n_questions": 3}, "errors": {"m": ["boom"]}}
+    notes = bf._fb_notices(out)
+    assert len(notes) <= 10
+    body = "\n".join(b for t, b in notes if t.startswith("FB rows"))
+    assert all(f"v{i} n=3" in body for i in range(19))
+    assert bf._gh_escape("a%\nb") == "a%25%0Ab"
