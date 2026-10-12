@@ -2,15 +2,16 @@
 
 With ``FREE_MODE=true`` every LLM the bot builds is a :class:`FreeModelChainLlm`: an ordered list
 of free-tier models (OpenRouter ``:free`` variants, Google AI Studio free-tier Gemini, optional
-NVIDIA NIM free endpoints). A call tries the first link and falls through to the next on ANY
+NVIDIA NIM free endpoints, and optional Groq Free-plan / Mistral Free-mode models). A call tries the first link and falls through to the next on ANY
 failure (429 / daily quota / 5xx / timeout / empty or unparseable reply / missing model), so a
 question still gets a forecast when one provider is out of quota. Model ids live in
 ``constants.py`` (``FREE_MODE_*``); this module holds no ids.
 
 Three safety properties, each pinned by ``tests/test_free_mode.py``:
 
-1. ``assert_free_model`` refuses an OpenRouter slug without ``:free`` and any Gemini id outside
-   ``FREE_MODE_GEMINI_FREE_TIER_MODELS``, at BUILD time, so a typo cannot ship a paid model.
+1. ``assert_free_model`` refuses an OpenRouter slug without ``:free``, any Gemini / Groq / Mistral
+   id outside its ``FREE_MODE_*_FREE_TIER_MODELS`` allow-list, and every other provider, at BUILD
+   time, so a typo cannot ship a paid model.
 2. Calls are paced per quota bucket (``FREE_MODE_MIN_INTERVAL_S``) so a burst stays under the
    free RPM limits instead of burning requests on 429s.
 3. A daily-quota 429 (OpenRouter ``free-models-per-day``, Gemini ``...PerDay...``) marks that
@@ -36,12 +37,17 @@ from metaculus_bot.constants import (
     FREE_MODE_FORECASTER_LINK_TIMEOUT_S,
     FREE_MODE_FORECASTER_MAX_TOKENS,
     FREE_MODE_GEMINI_FREE_TIER_MODELS,
+    FREE_MODE_GROQ_FREE_TIER_MODELS,
+    FREE_MODE_GROQ_MAX_TOKENS,
     FREE_MODE_MIN_INTERVAL_S,
+    FREE_MODE_MISTRAL_FREE_TIER_MODELS,
     FREE_MODE_NIM_MAX_TOKENS,
     FREE_MODE_UTILITY_CHAIN,
     FREE_MODE_UTILITY_LINK_TIMEOUT_S,
     FREE_MODE_UTILITY_MAX_TOKENS,
     GOOGLE_API_KEY_ENV,
+    GROQ_API_KEY_ENV,
+    MISTRAL_API_KEY_ENV,
     NVIDIA_API_KEY_ENV,
     OPENROUTER_API_KEY_ENV,
     free_mode_ensemble_size,
@@ -66,16 +72,28 @@ __all__ = [
 _OPENROUTER = "openrouter"
 _GEMINI = "gemini"
 _NIM = "nvidia_nim"
+_GROQ = "groq"
+_MISTRAL = "mistral"
 
 _PROVIDER_KEY_ENV: dict[str, str] = {
     _OPENROUTER: OPENROUTER_API_KEY_ENV,
     _GEMINI: GOOGLE_API_KEY_ENV,
     _NIM: NVIDIA_API_KEY_ENV,
+    _GROQ: GROQ_API_KEY_ENV,
+    _MISTRAL: MISTRAL_API_KEY_ENV,
+}
+
+# Providers whose free tier is an allow-list of model ids (anything else is refused at build time).
+_ALLOW_LISTED: dict[str, frozenset[str]] = {
+    _GEMINI: FREE_MODE_GEMINI_FREE_TIER_MODELS,
+    _GROQ: FREE_MODE_GROQ_FREE_TIER_MODELS,
+    _MISTRAL: FREE_MODE_MISTRAL_FREE_TIER_MODELS,
 }
 
 # English cues of a DAILY cap in the provider's 429 text (OpenRouter "free-models-per-day",
-# Gemini "GenerateRequestsPerDayPerProjectPerModel-FreeTier").
-_DAILY_QUOTA_CUES: tuple[str, ...] = ("per-day", "per day", "perday", "daily")
+# Gemini "GenerateRequestsPerDayPerProjectPerModel-FreeTier", Groq "requests per day (RPD)" /
+# "tokens per day (TPD)", Mistral's monthly allowance).
+_DAILY_QUOTA_CUES: tuple[str, ...] = ("per-day", "per day", "perday", "daily", "(rpd)", "(tpd)", "per month", "monthly")
 # A model the key cannot reach at all (Gemini 2.5 "no longer available to new users", NIM
 # "Not found for account"): skip it for the rest of the run.
 _MODEL_GONE_CUES: tuple[str, ...] = ("no longer available", "not found for account", "model not found")
@@ -100,10 +118,10 @@ def assert_free_model(model: str) -> None:
         if not model.endswith(":free"):
             raise NotFreeModelError(f"FREE_MODE refuses paid OpenRouter slug {model!r} (no ':free' suffix)")
         return
-    if provider == _GEMINI:
+    if provider in _ALLOW_LISTED:
         model_id = model.split("/", 1)[1] if "/" in model else ""
-        if model_id not in FREE_MODE_GEMINI_FREE_TIER_MODELS:
-            raise NotFreeModelError(f"FREE_MODE refuses Gemini model {model!r}: not on the free-tier list")
+        if model_id not in _ALLOW_LISTED[provider]:
+            raise NotFreeModelError(f"FREE_MODE refuses {provider} model {model!r}: not on the free-tier list")
         return
     if provider == _NIM:
         return  # NVIDIA's hosted developer endpoints have no paid tier on the same key
@@ -124,6 +142,14 @@ def _min_interval_s(model: str) -> float:
         key = "gemini-flash-lite" if "lite" in model else "gemini-flash"
         return FREE_MODE_MIN_INTERVAL_S[key]
     return FREE_MODE_MIN_INTERVAL_S.get(provider, 0.0)
+
+
+def _max_tokens_for(provider: str, max_tokens: int) -> int:
+    if provider == _NIM:
+        return min(max_tokens, FREE_MODE_NIM_MAX_TOKENS)
+    if provider == _GROQ:
+        return min(max_tokens, FREE_MODE_GROQ_MAX_TOKENS)
+    return max_tokens
 
 
 # Process-wide pacing clock and the buckets/models found exhausted this run.
@@ -252,7 +278,7 @@ def _build_link(
         "model": model,
         "temperature": None,
         "timeout": timeout,
-        "max_tokens": min(max_tokens, FREE_MODE_NIM_MAX_TOKENS) if provider == _NIM else max_tokens,
+        "max_tokens": _max_tokens_for(provider, max_tokens),
         "stream": False,
         "allowed_tries": 1,  # the chain is the retry layer; no un-gated tenacity sleeps per link
         "metadata": llm_call_metadata(role, PERSONAL_KEY_ALIAS if provider == _OPENROUTER else DIRECT_KEY_ALIAS),
