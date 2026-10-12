@@ -65,16 +65,32 @@ jobs:
         run: |
           uv run --frozen --no-dev python - <<'PY'
           import asyncio, os
+          from pathlib import Path
           from types import SimpleNamespace
-          from metaculus_bot.research.free_sources import gather_free_sources
-          q = SimpleNamespace(question_text="Will the Federal Reserve cut interest rates at its next FOMC meeting?", id_of_question=0)
-          text = asyncio.run(gather_free_sources(q))
-          gdelt = "GDELT Project" in text
-          wiki = "Wikipedia" in text
-          print(f"::notice title=Free research smoke::chars={len(text)} gdelt={gdelt} wikipedia={wiki}")
+          import aiohttp
+          from metaculus_bot.research import free_sources as fs
+          title = "Will the Federal Reserve cut interest rates at its next FOMC meeting?"
+          async def main():
+              terms = fs.extract_query_terms(title)
+              notes = [f"terms={terms}"]
+              async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25), headers={"User-Agent": fs.USER_AGENT}) as s:
+                  try:
+                      hits = await fs._gdelt_news(s, terms)
+                      notes.append(f"gdelt_hits={len(hits)} first={hits[0].title if hits else None}")
+                  except Exception as exc:
+                      notes.append(f"gdelt_error={type(exc).__name__}: {str(exc)[:300]}")
+                  try:
+                      wiki = await fs._wikipedia(s, terms)
+                      notes.append(f"wikipedia_pages={[t for t, _ in wiki]}")
+                  except Exception as exc:
+                      notes.append(f"wikipedia_error={type(exc).__name__}: {str(exc)[:300]}")
+              return notes
+          notes = asyncio.run(main())
+          Path("backtests").mkdir(exist_ok=True)
+          Path("backtests/free_research_smoke.txt").write_text("\n".join(notes) + "\n")
+          print("::notice title=Free research smoke::" + " | ".join(n[:150] for n in notes))
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
-              fh.write(f"### Free research smoke\n\nchars={len(text)}, GDELT section={gdelt}, Wikipedia section={wiki}\n\n")
-              fh.write("```\n" + "\n".join(text.splitlines()[:12]) + "\n```\n")
+              fh.write("### Free research smoke\n\n" + "\n".join(f"- {n}" for n in notes) + "\n\n")
           PY
       - name: Run free backtest
         id: run_backtest
