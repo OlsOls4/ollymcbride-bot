@@ -101,103 +101,67 @@ jobs:
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
         env:
+          # ---- FREE_MODE (ollymcbride-bot fork): a zero-cost run. ----
+          # Every LLM call goes to free-tier models through per-slot fallback chains
+          # (metaculus_bot/free_mode.py), and every paid research path is hard-disabled in
+          # code under FREE_MODE (constants._FREE_MODE_FORCED_OFF_FLAGS), so the 'false'
+          # flags below are belt-and-braces. To switch donated credits on later: add the paid
+          # secrets, set FREE_MODE to 'false' and restore upstream's flag block from
+          # No-Stream/nostreambot-metaculus-bot (same file); nothing else changes.
+          FREE_MODE: 'true'
+          # Ensemble slots (median of the survivors; stacking stays off). Max 5.
+          FREE_MODE_ENSEMBLE_SIZE: '4'
           # Single-question override consumed by cli.py's test_questions path:
           # Q14333 "Age of Oldest Human as of 2100" (plain-continuous numeric).
           # Unset, main.py would run the full evergreen EXAMPLE_QUESTIONS set.
           TEST_QUESTIONS_OVERRIDE: 'https://www.metaculus.com/questions/14333/age-of-oldest-human-as-of-2100/'
-          # Unbuffered stdout/stderr so log lines stream in real time and nothing
-          # is lost if the run crashes before a buffer flush.
           PYTHONUNBUFFERED: '1'
           FORECAST_RUN_STATUS_PATH: run_logs/status.json
-          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
-          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
-          # Exa semantic search (gap-fill v2's search_web tool; also the legacy
-          # SmartSearcher fallback path). Secret name is lowercase exa_key
-          # (funded 2026-07-16).
-          EXA_API_KEY: ${{ secrets.exa_key }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          # Free LLM keys. Each is optional: a missing key drops its links from every chain.
+          # OpenRouter: only ':free' model slugs are ever built (build-time check).
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OAI_ANTH_OPENROUTER_KEY: ${{ secrets.OAI_ANTH_OPENROUTER_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Google AI Studio key. It MUST come from a project with no billing account linked,
+          # or Gemini calls stop being free.
+          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # NVIDIA build.nvidia.com developer key (free, ~40 RPM).
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          # AskNews (sponsored): used as the primary research source only when both secrets
+          # exist; without them the primary is empty and the free providers below carry it.
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
           ASKNEWS_MAX_CONCURRENCY: '1'
           ASKNEWS_MAX_RPS: '0.2'
-          # Disable litellm's aiohttp transport (default since v1.71.x): under
-          # concurrent async bursts it raises near-instant connection failures
-          # litellm re-wraps as a 1ms Timeout (litellm #14895; see
-          # scratch_docs_and_planning/transient_retry_fix.md). Code already sets
-          # this default in metaculus_bot/__init__.py; pinned here for parity.
-          DISABLE_AIOHTTP_TRANSPORT: 'true'
-          # Native search runs in parallel with AskNews; model defaults to
-          # openai/gpt-6.1-sol (low effort, verbosity=low, 360s) per constants.py.
-          NATIVE_SEARCH_ENABLED: 'true'
-          FINANCIAL_DATA_ENABLED: 'true'
+          # Optional free FRED key; FRED series are skipped without it (yfinance needs none).
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          # Gemini grounded search (Google AI Studio SDK) adds a 3rd distinct source.
-          # GOOGLE_API_KEY is the operator's personal Google AI Studio key (stored
-          # in CI as secrets.GEMINI_API_KEY). The grounded-search side has no
-          # donated/shared path — Google AI Studio doesn't offer one.
-          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_SEARCH_ENABLED: 'true'
-          # OpenRouter Gemini routing (forecaster, stacker, summarizer when the
-          # ensemble includes a Google model). When 'true' (default since
-          # 2026-06-16), Gemini OpenRouter calls prefer the Metaculus-donated
-          # OAI_ANTH_OPENROUTER_KEY wrapper with personal-key fallback. On because
-          # Metaculus raised the Google rate limits — the donated key serves most
-          # Gemini now; gemini-3.1-pro-preview is pinned to the personal key
-          # (DONATED_KEY_BLOCKED_GOOGLE_MODELS blocklist; no donated attempt, no
-          # 429) pending the Metaculus BYOK fix.
-          GEMINI_USE_DONATED_OPENROUTER_KEY: 'true'
-          # Second-pass gap-fill: analyzer identifies gaps in first-pass research,
-          # parallel grounded Gemini searches resolve each. Fails soft.
-          GAP_FILL_ENABLED: 'true'
-          # Agentic gap-fill v2 (bounded research loop; runs concurrently with
-          # v1 when both are on). ON since 2026-07-17 after smoke + blind driver
-          # eval + Exa confirmation; v1 stays on for an overlap window.
-          GAP_FILL_V2_ENABLED: 'true'
-          # Prediction-market snapshot provider: Polymarket + Kalshi + Manifold.
-          # Manual workflow_dispatch runs use this for end-to-end testing in prod
-          # mode (is_benchmarking=False).
+          # Disable litellm's aiohttp transport (litellm #14895), as upstream.
+          DISABLE_AIOHTTP_TRANSPORT: 'true'
+          # --- Free research (no paid calls; their LLM steps use the free utility chain) ---
           PREDICTION_MARKETS_ENABLED: 'true'
-          # Fetch URLs cited in the resolution criteria; long HTML uses the paid
-          # page-digest extractor.
           RESOLUTION_SOURCE_ENABLED: 'true'
-          # The ladder's one PAID rung: when every free rung has failed to read a
-          # cited page, Gemini's url_context reader is asked to read it, billed to
-          # GOOGLE_API_KEY above. ON since 2026-09-04. Bounded by the free
-          # Google-Extended robots pre-check, the rung's wall-budget floor and
-          # RESOLUTION_SOURCE_URL_CONTEXT_MAX_ATTEMPTS paid reads per question.
-          RESOLUTION_SOURCE_URL_CONTEXT_ENABLED: 'true'
-          # Time-series anchor: deterministic empirical P10/P50/P90 band from a
-          # question's own resolution series (FRED/yfinance). Text anchor ON since
-          # 2026-07-17 (post smoke validation; see FUTURE.md "Time-series anchor").
+          FINANCIAL_DATA_ENABLED: 'true'
           TS_ANCHOR_ENABLED: 'true'
-          # TS anchor chart image side-channel (vision message to base models).
-          # OFF pending the text-vs-image A/B (see FUTURE.md "TS anchor chart image").
+          # Gemini grounded search: Google Search grounding is free ONLY on gemini-2.5-flash /
+          # -flash-lite (500 RPD); every Gemini 3.x model has no free grounding, and 2.5 is
+          # reported closed to newly created keys. Set BOTH to 'true' only after confirming the
+          # key can call gemini-2.5-flash; the model is then pinned in code.
+          GEMINI_SEARCH_ENABLED: 'false'
+          FREE_MODE_ALLOW_GEMINI_GROUNDING: 'false'
+          # --- Paid research and stacking: OFF (also forced off in code under FREE_MODE) ---
+          NATIVE_SEARCH_ENABLED: 'false'
+          GAP_FILL_ENABLED: 'false'
+          GAP_FILL_V2_ENABLED: 'false'
+          RESOLUTION_SOURCE_URL_CONTEXT_ENABLED: 'false'
+          PROBABILISTIC_TOOLS_ENABLED: 'false'
+          PROBABILISTIC_TOOLS_TYPES: 'binary,multiple_choice'
           TS_ANCHOR_CHART_ENABLED: 'false'
-          # Stacking disabled on all types (ablation: stacker <= median on binary,
-          # hurts numeric CRPS; stacker base model is a weak binary forecaster).
           NUMERIC_STACKING_ENABLED: 'false'
           BINARY_STACKING_ENABLED: 'false'
           MC_STACKING_ENABLED: 'false'
           OPENAI_AGENTS_DISABLE_TRACING: 'true'
-          # Raw research-provider payload log: each provider's RAW return (AskNews
-          # article dicts per phase, native/Gemini raw responses + grounding, market
-          # contracts, resolution-source fetches, gap-fill results) →
-          # run_logs/raw_research_<run_id>.jsonl, uploaded in this artifact.
-          # make sync_raw_research archives it (pulls research-* + logs-*).
-          RAW_RESEARCH_LOG_ENABLED: 'true'
-          # Persist research outputs as JSONL for offline backtest replay, same as the
-          # three prod workflows. Without it a test run's assembled per-question
-          # research text is unrecoverable — we keep the raw provider payloads and the
-          # telemetry markers but lose the briefing the forecasters actually read.
+          # Research archives for offline replay, as upstream.
           PERSIST_RESEARCH_ENABLED: 'true'
-      # Durable capture of research outputs + run logs (telemetry lives on stderr,
-      # tee'd to run_logs/). The artifact name MUST start with research-: sync_all.py
-      # gates the research harvest on that prefix, so a logs-* artifact contributes
-      # zero research records no matter what it contains. RUN_LOG_ARTIFACT_PREFIXES
-      # covers both families, so telemetry harvesting is unaffected by the name.
+          RAW_RESEARCH_LOG_ENABLED: 'true'
       - name: Upload research outputs
         uses: actions/upload-artifact@v7
         if: always()
