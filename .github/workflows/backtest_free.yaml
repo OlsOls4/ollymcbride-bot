@@ -1,6 +1,10 @@
 name: Backtest (FREE_MODE, resolved questions)
 
 # Zero-cost backtest of the free model chains on RESOLVED questions only (backtest_free.py).
+# source=forecastbench (default): keyless public ForecastBench data (market-source binary
+# questions, CC BY-SA 4.0, github.com/forecastingresearch/forecastbench-datasets) fetched at run
+# time; no Metaculus token is passed to the process at all. source=metaculus: the original path
+# (blocked since the API returns resolution=null to these tokens; see docs/free-mode.md).
 # workflow_dispatch ONLY: no schedule, no push trigger. It never publishes to Metaculus
 # (is_benchmarking=True, publish_reports_to_metaculus=False) and never uses OpenRouter: the
 # OPENROUTER_API_KEY secret is deliberately NOT wired, so the live bot's 50 requests/day
@@ -14,9 +18,16 @@ name: Backtest (FREE_MODE, resolved questions)
 on:
   workflow_dispatch:
     inputs:
+      source:
+        description: "Question source: forecastbench (keyless) or metaculus (needs METACULUS_BACKTEST_TOKEN)"
+        type: choice
+        options:
+          - forecastbench
+          - metaculus
+        default: forecastbench
       num_questions:
-        description: "Resolved questions to sample (mixed types)"
-        default: "36"
+        description: "Resolved questions to sample (ForecastBench: stratified by source)"
+        default: "60"
       tournaments:
         description: "Comma-separated tournament slugs (CURRENT_MINIBENCH = the current MiniBench)"
         default: "fall-futureeval-2026,summer-futureeval-2026,CURRENT_MINIBENCH,metaculus-cup-fall-2026"
@@ -24,11 +35,14 @@ on:
         description: "Only questions resolved on/after this date (YYYY-MM-DD)"
         default: "2026-06-01"
       members:
-        description: "Comma-separated free model ids (no openrouter/)"
-        default: "nvidia_nim/moonshotai/kimi-k3,nvidia_nim/z-ai/glm-5.3,nvidia_nim/deepseek-ai/deepseek-v4.1-flash,gemini/gemini-3.5-flash-lite,gemini/gemini-3.1-flash-lite"
+        description: "Comma-separated free model ids (no openrouter/); empty = the source's default members"
+        default: ""
       flash_questions:
-        description: "Also run gemini-3.8-flash on the first K questions (max 25; shares the live quota)"
-        default: "0"
+        description: "Also run gemini-3.8-flash on the first K questions (max 24 calls, no retry; shares the live quota)"
+        default: "20"
+      groq_questions:
+        description: "ForecastBench: Groq members on the first K questions (Groq Free is 200K tokens/day)"
+        default: "20"
 
 concurrency:
   group: ${{ github.workflow }}
@@ -93,8 +107,10 @@ jobs:
               fh.write("### Free research smoke\n\n" + "\n".join(f"- {n}" for n in notes) + "\n\n")
           PY
       - name: Require the read-only backtest token
-        # Bot tokens get resolution=null from the API, so a backtest without the personal
-        # (non-bot) read-only token cannot score anything. Fail fast instead of burning quota.
+        # Metaculus source only (ForecastBench needs no token). Bot tokens get resolution=null
+        # from the API, so a Metaculus backtest without the personal (non-bot) read-only token
+        # cannot score anything. Fail fast instead of burning quota.
+        if: ${{ inputs.source == 'metaculus' }}
         env:
           METACULUS_BACKTEST_TOKEN: ${{ secrets.METACULUS_BACKTEST_TOKEN }}
         run: |
@@ -111,10 +127,11 @@ jobs:
           FREE_MODE: "true"
           PYTHONUNBUFFERED: "1"
           DISABLE_AIOHTTP_TRANSPORT: "true"
-          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          # Metaculus tokens reach the process ONLY for source=metaculus (empty otherwise).
           # Personal non-bot token, READ-ONLY: backtest_free.py uses it (falling back to
           # METACULUS_TOKEN) only to fetch resolved questions; this workflow never publishes.
-          METACULUS_BACKTEST_TOKEN: ${{ secrets.METACULUS_BACKTEST_TOKEN }}
+          METACULUS_TOKEN: ${{ inputs.source == 'metaculus' && secrets.METACULUS_TOKEN || '' }}
+          METACULUS_BACKTEST_TOKEN: ${{ inputs.source == 'metaculus' && secrets.METACULUS_BACKTEST_TOKEN || '' }}
           GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           # Optional free keys (empty when the secret does not exist).
@@ -136,14 +153,18 @@ jobs:
           MC_STACKING_ENABLED: "false"
           FREE_RESEARCH_ENABLED: "false"
           OPENAI_AGENTS_DISABLE_TRACING: "true"
+          IN_SOURCE: ${{ inputs.source }}
           IN_NUM_QUESTIONS: ${{ inputs.num_questions }}
           IN_TOURNAMENTS: ${{ inputs.tournaments }}
           IN_RESOLVED_AFTER: ${{ inputs.resolved_after }}
           IN_MEMBERS: ${{ inputs.members }}
           IN_FLASH_QUESTIONS: ${{ inputs.flash_questions }}
+          IN_GROQ_QUESTIONS: ${{ inputs.groq_questions }}
         run: |
           mkdir -p backtests
           uv run --frozen --no-dev python backtest_free.py \
+            --source "${IN_SOURCE:-forecastbench}" \
+            --groq-questions "${IN_GROQ_QUESTIONS:-20}" \
             --num-questions "$IN_NUM_QUESTIONS" \
             --tournaments "$IN_TOURNAMENTS" \
             --resolved-after "$IN_RESOLVED_AFTER" \
