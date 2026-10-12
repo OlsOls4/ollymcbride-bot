@@ -370,7 +370,16 @@ async def _gdelt_news(session: aiohttp.ClientSession, terms: list[str]) -> list[
             "sort": "hybridrel",
             "timespan": _GDELT_TIMESPAN,
         }
-        data = await _get_json(session, _GDELT_URL, params=params)
+        try:
+            data = await _get_json(session, _GDELT_URL, params=params)
+        except RuntimeError as exc:
+            # GitHub runners share IPs, so GDELT's per-IP 5 s rule can 429 a first request.
+            # Wait one more slot and retry once; a second 429 propagates (soft-failed upstream).
+            if "429" not in str(exc) and "limit requests" not in str(exc).lower():
+                raise
+            if not await _gdelt_slot():
+                return []
+            data = await _get_json(session, _GDELT_URL, params=params)
         articles = (data.get("articles") or []) if isinstance(data, dict) else []
         hits = [
             _Hit(
