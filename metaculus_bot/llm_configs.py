@@ -8,7 +8,9 @@ from typing import Any
 
 from forecasting_tools import GeneralLlm
 
+from metaculus_bot.constants import free_mode_enabled
 from metaculus_bot.fallback_openrouter import build_llm_with_openrouter_fallback
+from metaculus_bot.free_mode import build_free_forecaster_llms
 
 __all__ = [
     "DISAGREEMENT_ANALYZER_LLM",
@@ -91,7 +93,7 @@ def _forecaster_slot(model: str, **kwargs: Any) -> GeneralLlm:
 # filtered per vendor prefix (openai/, anthropic/, google/, x-ai/); what to check on the
 # result is in docs/operations.md "Season-start checklist". Any change here is a config-era
 # boundary for residual analysis, so make it once, before the first question.
-FORECASTER_LLMS: list[GeneralLlm] = [
+_PAID_FORECASTER_LLMS: list[GeneralLlm] = [
     # 2026-07-20: forecaster roster dropped from 6 to a 3-member latest-per-vendor
     # triple (1 OpenAI / 1 Anthropic / 1 Google). This is the SECOND roster change
     # on 2026-07-20 and supersedes the morning fable-5 → opus-4.7 swap (7a76df6) as
@@ -144,6 +146,11 @@ FORECASTER_LLMS: list[GeneralLlm] = [
     # TODO(gemini-3.1-pro-donated) tag pending the Metaculus-side BYOK fix.
     _forecaster_slot("openrouter/google/gemini-3.1-pro-preview"),
 ]
+
+# FREE_MODE (ollymcbride-bot fork): free-tier fallback chains replace the paid roster; every
+# support-role LLM below is swapped inside build_llm_with_openrouter_fallback. Read at import, after
+# constants.load_environment(), so FREE_MODE in .env or the workflow env both take effect.
+FORECASTER_LLMS: list[GeneralLlm] = build_free_forecaster_llms() if free_mode_enabled() else _PAID_FORECASTER_LLMS
 
 
 def _forecaster_display_name(llm: GeneralLlm) -> str:
