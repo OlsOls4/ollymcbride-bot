@@ -31,6 +31,7 @@ _ALLOWED_FILES: frozenset[str] = frozenset(
         "metaculus_bot/ablation/leakage_screen.py",  # DEFAULT_DETECTOR_MODEL
         "metaculus_bot/ablation/run_stacker.py",  # ablation stacker/parser defaults
         "metaculus_bot/benchmark/bot_factory.py",  # MODEL_CATALOG for the deprecated benchmark harness
+        "metaculus_bot/backtest/forecastbench.py",  # MODEL_CUTOFFS leakage table, offline backtest only
         "metaculus_bot/ensemble_analysis/ensemble_simulator.py",  # per-model cost-correction heuristic
     }
 )
