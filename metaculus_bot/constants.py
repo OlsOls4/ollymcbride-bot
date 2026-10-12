@@ -780,6 +780,15 @@ RAW_RESEARCH_MAX_PAYLOAD_CHARS: int = 200_000
 # and at call time everywhere else.
 FREE_MODE_ENV: str = "FREE_MODE"
 NVIDIA_API_KEY_ENV: str = "NVIDIA_API_KEY"
+# Optional free LLM keys (2026-10-12). Absent key => that provider's links drop out of every chain.
+# Groq Free plan: no card; gpt-oss-120b / gpt-oss-20b / qwen3.8-27b at 30 RPM, 1K RPD, 8K TPM,
+# 200K TPD per org (console.groq.com/docs/rate-limits). Upgrading needs a card, so a card-less
+# org cannot be billed.
+GROQ_API_KEY_ENV: str = "GROQ_API_KEY"
+# Mistral Studio "Free mode": no card (phone verification), monthly token allowance, lowest rate
+# limits; Mistral describes it as for evaluation/prototyping and may train on free-mode traffic
+# unless opted out (help.mistral.ai). Usage stops at the allowance unless pay-as-you-go is enabled.
+MISTRAL_API_KEY_ENV: str = "MISTRAL_API_KEY"
 # Opt-in for Gemini grounded search under FREE_MODE. Free Google Search grounding exists ONLY on
 # gemini-2.5-flash / -flash-lite (500 RPD, shared; every Gemini 3.x model reads "Not available" on
 # the free tier per ai.google.dev/gemini-api/docs/pricing, checked 2026-10-12), and 2.5 is reported
@@ -858,6 +867,18 @@ FREE_MODE_GEMINI_FREE_TIER_MODELS: frozenset[str] = frozenset(
     }
 )
 
+# Groq Free-plan chat models (console.groq.com/docs/rate-limits "Free Plan Limits", 2026-10-12).
+# Its 8K tokens-per-minute cap means a long forecasting prompt is rejected (413/429) and the chain
+# simply moves on; Groq links therefore sit near the END of chains as an extra fallback.
+FREE_MODE_GROQ_FREE_TIER_MODELS: frozenset[str] = frozenset(
+    {"openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"}
+)
+# Mistral Free mode covers the API catalogue within the monthly allowance; only these aliases
+# are wired, so a typo cannot reach an unknown id.
+FREE_MODE_MISTRAL_FREE_TIER_MODELS: frozenset[str] = frozenset(
+    {"mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"}
+)
+
 # One chain per ensemble slot, strongest first. Each slot LEADS with a different model so a
 # healthy run keeps a diverse ensemble; the tails fall back across providers so a 429 / daily
 # cap / 5xx on one provider still yields a forecast. OpenRouter :free shares ONE account-wide
@@ -916,6 +937,8 @@ FREE_MODE_MIN_INTERVAL_S: dict[str, float] = {
     "nvidia_nim": 60.0 / 30,  # ~40 RPM limit
     "gemini-flash": 60.0 / 4,  # 3.x Flash measured 5 RPM / 20 RPD on the free tier
     "gemini-flash-lite": 60.0 / 12,  # Flash-Lite measured 15 RPM / 500 RPD
+    "groq": 60.0 / 25,  # Free plan 30 RPM per org
+    "mistral": 2.0,  # Free mode is ~1 request/s (unpublished; read from the console)
 }
 # Per-link litellm timeouts. A forecaster chain lives inside FORECASTER_SOFT_DEADLINE (600 s), so
 # a stalled first link must leave the next link room to answer.
@@ -923,4 +946,6 @@ FREE_MODE_FORECASTER_LINK_TIMEOUT_S: float = 240.0
 FREE_MODE_UTILITY_LINK_TIMEOUT_S: float = 90.0
 FREE_MODE_FORECASTER_MAX_TOKENS: int = 32_000
 FREE_MODE_NIM_MAX_TOKENS: int = 16_384
+# Groq Free counts max_tokens against its 8K TPM, so a large completion budget alone would 429.
+FREE_MODE_GROQ_MAX_TOKENS: int = 4_096
 FREE_MODE_UTILITY_MAX_TOKENS: int = 16_000
