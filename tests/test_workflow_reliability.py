@@ -37,8 +37,6 @@ import yaml
 from metaculus_bot.constants import (
     METACULUS_CLOSE_WINDOW_SECONDS,
     PER_QUESTION_WALL_CLOCK_DEADLINE,
-    PUBLISH_RESERVE_SECONDS,
-    TIME_BUDGET_FAST_PATH_THRESHOLD,
     WALL_CLOCK_STACKING_MIN_BUDGET,
 )
 
@@ -115,10 +113,8 @@ class TestEveryJobIsCapped:
         # silently escape them. .y*ml because both spellings are live (claude.yml).
         assert _ALL_WORKFLOWS == [
             ".github/workflows/ci.yaml",
-            ".github/workflows/claude.yml",
             ".github/workflows/fetch_diagnostic.yaml",
             ".github/workflows/forecast_notification_test.yaml",
-            ".github/workflows/run_bot_on_mantic.yaml",
             ".github/workflows/run_bot_on_metaculus_cup.yaml",
             ".github/workflows/run_bot_on_minibench.yaml",
             ".github/workflows/run_bot_on_tournament.yaml",
@@ -259,7 +255,6 @@ class TestNonBotWorkflowCapsStayInBand:
         # check above rather than escaping both parametrizations.
         assert _NON_BOT_WORKFLOWS == [
             ".github/workflows/ci.yaml",
-            ".github/workflows/claude.yml",
             ".github/workflows/fetch_diagnostic.yaml",
             ".github/workflows/forecast_notification_test.yaml",
         ]
@@ -279,13 +274,7 @@ class TestScheduledBotCadence:
     groups (``group: ${{ github.workflow }}``), so a shared minute does not queue — it
     starts two or three full bot runs at once, on the same runner pool and against the same
     shared AskNews / Gemini / OpenRouter quotas.
-
-    The Mantic workflow's entries all sit early in the hour, and the pin below derives why.
     """
-
-    mantic_rel_path = ".github/workflows/run_bot_on_mantic.yaml"
-    _MANTIC_WINDOW_SECONDS = 3600
-    _MANTIC_MIN_ENTRIES = 3
 
     @staticmethod
     def _schedule(rel_path: str) -> list[str]:
@@ -304,9 +293,10 @@ class TestScheduledBotCadence:
         # Derived from the files, then pinned: the two test workflows are dispatch-only
         # (spending is the operator's choice), and a new cron on one of them would show up
         # here rather than silently starting to publish on a schedule.
+        # ollymcbride-bot fork: the Mantic workflow is deleted and the Metaculus Cup schedule is
+        # removed (bots are not prize-eligible there; the free daily budgets go to FutureEval +
+        # MiniBench), so only these two run on a schedule.
         assert sorted(self.scheduled) == [
-            ".github/workflows/run_bot_on_mantic.yaml",
-            ".github/workflows/run_bot_on_metaculus_cup.yaml",
             ".github/workflows/run_bot_on_minibench.yaml",
             ".github/workflows/run_bot_on_tournament.yaml",
         ]
@@ -341,32 +331,6 @@ class TestScheduledBotCadence:
                     "and one set of shared research quotas, not a queue"
                 )
                 minutes[minute] = rel_path
-
-    def test_every_mantic_entry_fires_early_enough_for_the_full_research_path(self) -> None:
-        """Mantic questions open on the hour with 60-minute windows, so only early entries earn their keep.
-
-        The per-question budget is the close time minus now minus PUBLISH_RESERVE_SECONDS, and a
-        budget under TIME_BUDGET_FAST_PATH_THRESHOLD gets only the degraded research path, so an
-        entry later than the derived minute buys a worse forecast and the last quarter-hour (under
-        TIME_BUDGET_MIN_VIABLE_S) buys nothing. GitHub delivers about 22% of this repository's
-        scheduled firings (7 to 23 of 72 a day, measured 2026-08-27 to 2026-09-07), which is why
-        there are several early entries rather than one; the durable fix is an external dispatcher
-        (docs/operations.md "Scheduling reliability"). Two crons at :17/:47 would have forfeited
-        roughly half of all one-hour questions and given the :47 pickup only the fast path.
-        """
-        minutes = sorted(int(cron.split()[0]) for cron in self.scheduled[self.mantic_rel_path])
-        last_full_path_minute = (
-            self._MANTIC_WINDOW_SECONDS - PUBLISH_RESERVE_SECONDS - TIME_BUDGET_FAST_PATH_THRESHOLD
-        ) // 60
-        assert len(minutes) >= self._MANTIC_MIN_ENTRIES, (
-            f"{self.mantic_rel_path} has {len(minutes)} cron entry(ies); under GitHub's measured ~22% delivery a "
-            f"60-minute Mantic window needs at least {self._MANTIC_MIN_ENTRIES} early chances"
-        )
-        assert max(minutes) <= last_full_path_minute, (
-            f"{self.mantic_rel_path} fires at {minutes}, but a pickup after :{last_full_path_minute} of a "
-            "60-minute Mantic window falls under the fast-path threshold and gets only the degraded research "
-            "path; later entries buy little and the last quarter-hour buys nothing"
-        )
 
 
 class TestFetchDiagnosticCannotSpend:
@@ -408,17 +372,35 @@ class TestFetchDiagnosticCannotSpend:
         )
 
 
-class TestPaidUrlContextRungIsArmedInEveryBotWorkflow:
-    """The resolution-source ladder's one paid rung ships ON, and only where its key is wired.
+class TestEveryBotWorkflowRunsInFreeMode:
+    """ollymcbride-bot fork: every bot workflow is a zero-cost FREE_MODE run.
 
-    ``RESOLUTION_SOURCE_URL_CONTEXT_ENABLED`` defaults off in code, so a bot workflow that forgets
-    the line runs the whole ladder free and silently forfeits the pages only Gemini's egress can
-    read, while the flag WITHOUT ``GOOGLE_API_KEY`` in the same step is the ``no_api_key``
-    misconfiguration, byte-identical in the archive to a flag-off run. Both halves are pinned per
-    workflow, so a new bot workflow has to make the same choice deliberately rather than inherit
-    the code default. The operator turned the flag on in every bot workflow on 2026-09-04; turning
-    it off anywhere is a cost-gate decision (AGENTS.md), not a tidy-up.
+    Upstream pinned the paid url_context rung ON and the donated key WIRED in every bot workflow.
+    The fork inverts both: ``FREE_MODE: 'true'`` on the step that runs main.py, every paid
+    research flag 'false', and no paid provider's secret reachable anywhere in the file (raw
+    text, so job env, step env and inline expressions are all caught). Code enforces the same
+    rule independently (``constants._FREE_MODE_FORCED_OFF_FLAGS``, ``free_mode.assert_free_model``);
+    this is the workflow half. Switching donated credits on is a deliberate edit of these pins.
     """
+
+    _PAID_SECRETS = (
+        "OAI_ANTH_OPENROUTER_KEY",
+        "PERPLEXITY_API_KEY",
+        "exa_key",
+        "EXA_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+    )
+    _PAID_FLAGS_OFF = (
+        "NATIVE_SEARCH_ENABLED",
+        "GAP_FILL_ENABLED",
+        "GAP_FILL_V2_ENABLED",
+        "RESOLUTION_SOURCE_URL_CONTEXT_ENABLED",
+        "NUMERIC_STACKING_ENABLED",
+        "BINARY_STACKING_ENABLED",
+        "MC_STACKING_ENABLED",
+        "GEMINI_SEARCH_ENABLED",
+    )
 
     @staticmethod
     def _bot_step_env(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -429,79 +411,25 @@ class TestPaidUrlContextRungIsArmedInEveryBotWorkflow:
         return bot_steps[0].get("env") or {}
 
     @pytest.mark.parametrize("rel_path", _BOT_WORKFLOWS)
-    def test_the_flag_is_on_in_the_bot_step(self, rel_path: str) -> None:
+    def test_free_mode_is_on_in_the_bot_step(self, rel_path: str) -> None:
         env = self._bot_step_env(_workflow(rel_path))
-        assert env.get("RESOLUTION_SOURCE_URL_CONTEXT_ENABLED") == "true", (
-            f"{rel_path} does not set RESOLUTION_SOURCE_URL_CONTEXT_ENABLED: 'true' on its bot step, so "
-            "its resolution-source ladder runs without the paid url_context rung the other bot "
-            "workflows have on"
-        )
+        assert env.get("FREE_MODE") == "true", f"{rel_path} does not set FREE_MODE: 'true' on its bot step"
 
     @pytest.mark.parametrize("rel_path", _BOT_WORKFLOWS)
-    def test_the_key_the_rung_bills_to_is_wired_in_the_same_step(self, rel_path: str) -> None:
+    def test_every_paid_flag_is_off(self, rel_path: str) -> None:
         env = self._bot_step_env(_workflow(rel_path))
-        assert "secrets." in str(env.get("GOOGLE_API_KEY", "")), (
-            f"{rel_path} arms the paid url_context rung but wires no GOOGLE_API_KEY secret on the bot "
-            "step, so every admitted read would be a no_api_key skip and the run would read in the "
-            "archive exactly like one with the flag off"
-        )
+        for flag in self._PAID_FLAGS_OFF:
+            assert env.get(flag) == "false", f"{rel_path} must set {flag}: 'false' in FREE_MODE"
 
-
-class TestManticWorkflowSpendsOnlyPersonalKeys:
-    """The Mantic workflow must never hold the Metaculus-donated OpenRouter key, and the
-    Metaculus workflows must never lose it.
-
-    Metaculus donates ``OAI_ANTH_OPENROUTER_KEY`` for its own tournaments, so a run that
-    forecasts for Mantic (a different platform) spends only the operator's personal keys.
-    The code side fails shut (``cli._assert_personal_keys_only`` refuses to start while
-    ``DONATED_OPENROUTER_KEY_ENABLED`` reads true), and this pin is the workflow side of the
-    same rule: the secret is simply not wired, so no code-path change can reach it. Raw
-    text, not the parsed tree, for the same reason as ``TestFetchDiagnosticCannotSpend``: a
-    secret can arrive as job env, step env or an inline expression, and only the source
-    catches all of them. The inverse pin exists because the Mantic file was copied from the
-    tournament one; copying it back over a Metaculus workflow would silently move every
-    Metaculus run onto the personal key.
-    """
-
-    mantic_rel_path = ".github/workflows/run_bot_on_mantic.yaml"
-    _DONATED_KEY_SECRET = "OAI_ANTH_OPENROUTER_KEY"
-
-    @property
-    def mantic_raw(self) -> str:
-        return (_REPO_ROOT / self.mantic_rel_path).read_text()
-
-    def test_the_donated_key_and_the_metaculus_token_are_absent(self) -> None:
-        for forbidden in (self._DONATED_KEY_SECRET, "METACULUS_TOKEN"):
-            assert forbidden not in self.mantic_raw, (
-                f"{self.mantic_rel_path} references {forbidden}. A Mantic run must spend only the "
-                "operator's personal keys and must not depend on Metaculus credentials at all"
-            )
-
-    def test_the_mantic_token_is_wired_from_a_secret(self) -> None:
-        assert "secrets.MANTIC_TOKEN" in self.mantic_raw, (
-            f"{self.mantic_rel_path} does not wire MANTIC_TOKEN from a repository secret, so the "
-            "client cannot authenticate and every publish would 401"
-        )
-
-    def test_both_donated_routing_flags_are_forced_off(self) -> None:
-        for flag in ("DONATED_OPENROUTER_KEY_ENABLED", "GEMINI_USE_DONATED_OPENROUTER_KEY"):
-            assert f"{flag}: 'false'" in self.mantic_raw, (
-                f"{self.mantic_rel_path} does not set {flag}: 'false'. Both default to true in code, "
-                "and the master switch is what lets cli._assert_personal_keys_only start the run"
-            )
-
-    def test_the_run_step_selects_mantic_mode(self) -> None:
-        assert "--mode mantic" in self.mantic_raw, (
-            f"{self.mantic_rel_path} does not pass --mode mantic, so it would forecast the Metaculus "
-            "tournament with no METACULUS_TOKEN and publish nothing"
-        )
-
-    @pytest.mark.parametrize("rel_path", [p for p in _BOT_WORKFLOWS if not p.endswith("run_bot_on_mantic.yaml")])
-    def test_every_metaculus_bot_workflow_still_wires_the_donated_key(self, rel_path: str) -> None:
+    @pytest.mark.parametrize("rel_path", _BOT_WORKFLOWS)
+    def test_no_paid_secret_is_wired(self, rel_path: str) -> None:
         raw = (_REPO_ROOT / rel_path).read_text()
-        assert f"{self._DONATED_KEY_SECRET}: ${{{{ secrets.{self._DONATED_KEY_SECRET} }}}}" in raw, (
-            f"{rel_path} no longer wires {self._DONATED_KEY_SECRET} from its secret. Every Metaculus "
-            "workflow routes OpenAI, Anthropic and Google calls through the donated key first; "
-            "dropping it moves the whole run onto the personal key. If this file was overwritten "
-            "with a copy of the Mantic workflow, that is the mistake this pin exists to catch"
-        )
+        for secret in self._PAID_SECRETS:
+            assert f"secrets.{secret}" not in raw, f"{rel_path} wires the paid secret {secret}"
+
+    @pytest.mark.parametrize("rel_path", _BOT_WORKFLOWS)
+    def test_free_keys_are_wired_from_secrets(self, rel_path: str) -> None:
+        env = self._bot_step_env(_workflow(rel_path))
+        assert env.get("GOOGLE_API_KEY") == "${{ secrets.GEMINI_API_KEY }}"
+        for key in ("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "METACULUS_TOKEN"):
+            assert env.get(key) == f"${{{{ secrets.{key} }}}}", f"{rel_path} does not wire {key}"
