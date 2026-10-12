@@ -874,10 +874,10 @@ FREE_MODE_GROQ_FREE_TIER_MODELS: frozenset[str] = frozenset(
     {"openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"}
 )
 # Mistral Free mode covers the API catalogue within the monthly allowance; only these aliases
-# are wired, so a typo cannot reach an unknown id.
-FREE_MODE_MISTRAL_FREE_TIER_MODELS: frozenset[str] = frozenset(
-    {"mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"}
-)
+# are wired, so a typo cannot reach an unknown id. mistral-large-latest was dropped 2026-10-12:
+# the free key's /v1/models list does not include it (free_keys_health.yaml run 38313534110;
+# Large 4 is a preview with no -latest alias and is reported as tier_not_allowed on Free).
+FREE_MODE_MISTRAL_FREE_TIER_MODELS: frozenset[str] = frozenset({"mistral-medium-latest", "mistral-small-latest"})
 
 # One chain per ensemble slot, strongest first. Each slot LEADS with a different model so a
 # healthy run keeps a diverse ensemble; the tails fall back across providers so a 429 / daily
@@ -889,7 +889,7 @@ FREE_MODE_FORECASTER_CHAINS: tuple[tuple[str, ...], ...] = (
         "nvidia_nim/moonshotai/kimi-k3",
         "openrouter/thinkingmachines/inkling:free",
         "nvidia_nim/z-ai/glm-5.3",
-        "mistral/mistral-large-latest",
+        "mistral/mistral-medium-latest",
         "gemini/gemini-3.5-flash-lite",
     ),
     (
