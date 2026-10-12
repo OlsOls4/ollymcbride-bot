@@ -218,6 +218,12 @@ def env_flag_enabled(env_name: str, *, default: bool = False) -> bool:
     When the env var is unset (or empty string), returns ``default``.
     Explicit "false"/"0"/"no" always returns False, regardless of default.
     """
+    if env_name in _FREE_MODE_FORCED_OFF_FLAGS and free_mode_enabled():
+        # FREE_MODE hard-off: a paid research path stays off whatever its own env var says,
+        # so a stray workflow flag cannot spend money. See the FREE MODE section at the bottom.
+        return False
+    if env_name == GEMINI_SEARCH_ENABLED_ENV and free_mode_blocks_gemini_search():
+        return False
     raw = os.getenv(env_name, "").lower()
     if raw == "":
         return default
@@ -758,3 +764,163 @@ RAW_RESEARCH_LOG_DIR_ENV: str = "RAW_RESEARCH_LOG_DIR"
 RAW_RESEARCH_LOG_DIR_DEFAULT: str = "run_logs"
 # Beyond this a payload becomes a truncation marker. Receipt: docs/constants.md "RAW_RESEARCH_MAX_PAYLOAD_CHARS".
 RAW_RESEARCH_MAX_PAYLOAD_CHARS: int = 200_000
+
+
+# =============================================================================
+# FREE MODE (ollymcbride-bot fork): zero-cost operation on free-tier models only
+# =============================================================================
+#
+# FREE_MODE=true swaps EVERY LLM call onto free-tier models (OpenRouter ``:free`` variants,
+# Google AI Studio free-tier Gemini, optional NVIDIA NIM free endpoints) behind per-slot fallback
+# chains (``metaculus_bot/free_mode.py``), and hard-disables every research path that spends
+# money. Unset (or false), nothing below changes behaviour: the paid path is untouched, so donated
+# credits are switched on by adding secrets and setting FREE_MODE=false.
+#
+# Read at import by llm_configs (after load_environment above, so a .env FREE_MODE is honoured)
+# and at call time everywhere else.
+FREE_MODE_ENV: str = "FREE_MODE"
+NVIDIA_API_KEY_ENV: str = "NVIDIA_API_KEY"
+# Opt-in for Gemini grounded search under FREE_MODE. Free Google Search grounding exists ONLY on
+# gemini-2.5-flash / -flash-lite (500 RPD, shared; every Gemini 3.x model reads "Not available" on
+# the free tier per ai.google.dev/gemini-api/docs/pricing, checked 2026-10-12), and 2.5 is reported
+# closed to newly created keys, so it stays off unless the operator confirms their key reaches it.
+FREE_MODE_ALLOW_GEMINI_GROUNDING_ENV: str = "FREE_MODE_ALLOW_GEMINI_GROUNDING"
+FREE_MODE_GEMINI_GROUNDING_MODEL: str = "gemini-2.5-flash"
+# Gemini 2.x takes a thinking budget and rejects ``thinking_level``; the grounding call omits it.
+GEMINI_NO_THINKING_LEVEL_PREFIX: str = "gemini-2."
+# How many ensemble slots to run (each slot is a fallback chain). Median aggregation is unchanged.
+FREE_MODE_ENSEMBLE_SIZE_ENV: str = "FREE_MODE_ENSEMBLE_SIZE"
+FREE_MODE_ENSEMBLE_SIZE_DEFAULT: int = 4
+
+
+def free_mode_enabled() -> bool:
+    """Whether the zero-cost FREE_MODE is on (``FREE_MODE=true``). Default off: the paid path."""
+    raw = os.getenv(FREE_MODE_ENV, "").strip().lower()
+    return raw in ("true", "1", "yes")
+
+
+def free_mode_gemini_grounding_allowed() -> bool:
+    """FREE_MODE only: whether the operator opted in to free-tier Gemini grounded search."""
+    raw = os.getenv(FREE_MODE_ALLOW_GEMINI_GROUNDING_ENV, "").strip().lower()
+    return raw in ("true", "1", "yes")
+
+
+def free_mode_ensemble_size() -> int:
+    """FREE_MODE ensemble slot count, clamped to the chains defined below."""
+    return max(
+        1, min(_int_env(FREE_MODE_ENSEMBLE_SIZE_ENV, FREE_MODE_ENSEMBLE_SIZE_DEFAULT), len(FREE_MODE_FORECASTER_CHAINS))
+    )
+
+
+# Every flag here is forced OFF under FREE_MODE by ``env_flag_enabled``. Most drive a paid model
+# or API (gpt-6.1-sol native search, gap-fill v1/v2's sol driver + Exa + paid reads, the Gemini
+# url_context paid rung); stacking stays off as in prod, and the TS chart image is off because
+# it is a vision side-channel most free models cannot take. GEMINI_SEARCH_ENABLED is handled by
+# ``free_mode_blocks_gemini_search`` below because it has an opt-in.
+_FREE_MODE_FORCED_OFF_FLAGS: frozenset[str] = frozenset(
+    {
+        NATIVE_SEARCH_ENABLED_ENV,
+        GAP_FILL_ENABLED_ENV,
+        GAP_FILL_V2_ENABLED_ENV,
+        RESOLUTION_SOURCE_URL_CONTEXT_ENABLED_ENV,
+        BINARY_STACKING_ENABLED_ENV,
+        MC_STACKING_ENABLED_ENV,
+        NUMERIC_STACKING_ENABLED_ENV,
+        TS_ANCHOR_CHART_ENABLED_ENV,
+    }
+)
+
+
+def free_mode_blocks_gemini_search() -> bool:
+    """True iff FREE_MODE is on and the operator has NOT opted in to free-tier grounding."""
+    return free_mode_enabled() and not free_mode_gemini_grounding_allowed()
+
+
+# --- Free model ids (live-checked 2026-10-12; see docs in the fork's README "Free mode") ---
+#
+# Slugs use litellm provider prefixes: ``openrouter/...:free`` (OPENROUTER_API_KEY),
+# ``gemini/...`` (Google AI Studio, GOOGLE_API_KEY) and ``nvidia_nim/...`` (NVIDIA_API_KEY). A link
+# whose key is absent is dropped from its chain at build time. ``free_mode.assert_free_model``
+# refuses any OpenRouter slug without ``:free`` and any Gemini id outside the free-tier list.
+#
+# Gemini models that are "Free of charge" on the Standard free tier per the pricing page
+# (2026-10-12). gemini-3.1-pro-preview is NOT free and is deliberately absent.
+FREE_MODE_GEMINI_FREE_TIER_MODELS: frozenset[str] = frozenset(
+    {
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    }
+)
+
+# One chain per ensemble slot, strongest first. Each slot LEADS with a different model so a
+# healthy run keeps a diverse ensemble; the tails fall back across providers so a 429 / daily
+# cap / 5xx on one provider still yields a forecast. OpenRouter :free shares ONE account-wide
+# budget (20 RPM; 50 RPD under $10 lifetime credits, 1000 RPD at >= $10), so only slot 2 leads
+# on OpenRouter; NIM (~40 RPM per key, community-observed) and Gemini carry the rest.
+FREE_MODE_FORECASTER_CHAINS: tuple[tuple[str, ...], ...] = (
+    (
+        "nvidia_nim/moonshotai/kimi-k3",
+        "openrouter/thinkingmachines/inkling:free",
+        "nvidia_nim/z-ai/glm-5.3",
+        "gemini/gemini-3.5-flash-lite",
+    ),
+    (
+        "openrouter/thinkingmachines/inkling:free",
+        "nvidia_nim/moonshotai/kimi-k3",
+        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "gemini/gemini-3.1-flash-lite",
+    ),
+    (
+        "gemini/gemini-3.8-flash",
+        "nvidia_nim/z-ai/glm-5.3",
+        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "gemini/gemini-3.5-flash-lite",
+    ),
+    (
+        "nvidia_nim/z-ai/glm-5.3",
+        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+        "gemini/gemini-3.1-flash-lite",
+    ),
+    (
+        "openrouter/apodex/apodex-1.1-mini:free",
+        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+        "openrouter/dots-studio/dots-3-note-preview:free",
+        "gemini/gemini-3.5-flash-lite",
+    ),
+)
+
+# Parser, summarizer, market ranker/author, page digest, financial classifier and the (disabled)
+# stacker/analyzer slots. Flash-Lite leads because it has the largest free daily allowance
+# (measured 15 RPM / 500 RPD per model, aiplug.work 2026-09-02) and keeps OpenRouter's small
+# daily budget for the forecasters; gemma-4-31b-it was the only free OpenRouter model to pass
+# the ablation parser bake-off (ablation/forecaster_lineup.py FREE_PARSER_MODEL).
+FREE_MODE_UTILITY_CHAIN: tuple[str, ...] = (
+    "gemini/gemini-3.5-flash-lite",
+    "gemini/gemini-3.1-flash-lite",
+    "nvidia_nim/google/gemma-4-31b-it",
+    "openrouter/google/gemma-4-31b-it:free",
+)
+
+# Request pacing: minimum seconds between call STARTS per quota bucket, kept under each free
+# limit with margin. OpenRouter's 20 RPM is account-wide across :free models; NIM's ~40 RPM is per
+# key; Gemini quotas are per project PER MODEL, so Gemini buckets are per model.
+FREE_MODE_MIN_INTERVAL_S: dict[str, float] = {
+    "openrouter": 60.0 / 16,  # 20 RPM limit
+    "nvidia_nim": 60.0 / 30,  # ~40 RPM limit
+    "gemini-flash": 60.0 / 4,  # 3.x Flash measured 5 RPM / 20 RPD on the free tier
+    "gemini-flash-lite": 60.0 / 12,  # Flash-Lite measured 15 RPM / 500 RPD
+}
+# Per-link litellm timeouts. A forecaster chain lives inside FORECASTER_SOFT_DEADLINE (600 s), so
+# a stalled first link must leave the next link room to answer.
+FREE_MODE_FORECASTER_LINK_TIMEOUT_S: float = 240.0
+FREE_MODE_UTILITY_LINK_TIMEOUT_S: float = 90.0
+FREE_MODE_FORECASTER_MAX_TOKENS: int = 32_000
+FREE_MODE_NIM_MAX_TOKENS: int = 16_384
+FREE_MODE_UTILITY_MAX_TOKENS: int = 16_000
