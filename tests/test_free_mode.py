@@ -414,8 +414,8 @@ def test_every_llm_the_cli_wires_is_a_free_chain_under_free_mode() -> None:
         "groq/openai/gpt-oss-120b",
         "groq/openai/gpt-oss-20b",
         "groq/qwen/qwen3.8-27b",
-        "mistral/mistral-large-latest",
         "mistral/mistral-medium-latest",
+        "mistral/mistral-small-latest",
     ],
 )
 def test_groq_and_mistral_free_models_allowed(model: str) -> None:
@@ -428,6 +428,7 @@ def test_groq_and_mistral_free_models_allowed(model: str) -> None:
         "groq/moonshotai/kimi-k3-0905",
         "groq/compound",
         "mistral/codestral-2508",
+        "mistral/mistral-large-latest",
         "github/openai/gpt-5",
         "cohere/command-a",
     ],
