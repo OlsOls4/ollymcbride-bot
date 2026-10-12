@@ -119,6 +119,7 @@ class TestEveryJobIsCapped:
             ".github/workflows/ci.yaml",
             ".github/workflows/fetch_diagnostic.yaml",
             ".github/workflows/forecast_notification_test.yaml",
+            ".github/workflows/free_keys_health.yaml",
             ".github/workflows/run_bot_on_metaculus_cup.yaml",
             ".github/workflows/run_bot_on_minibench.yaml",
             ".github/workflows/run_bot_on_tournament.yaml",
@@ -262,6 +263,7 @@ class TestNonBotWorkflowCapsStayInBand:
             ".github/workflows/ci.yaml",
             ".github/workflows/fetch_diagnostic.yaml",
             ".github/workflows/forecast_notification_test.yaml",
+            ".github/workflows/free_keys_health.yaml",
         ]
 
 
