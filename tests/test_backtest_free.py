@@ -45,6 +45,47 @@ def test_sanitize_strips_openrouter_and_paid_keys(monkeypatch: pytest.MonkeyPatc
     assert os.environ["FREE_RESEARCH_ENABLED"] == "false"
 
 
+def _register_sanitizer_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    for flag in (
+        "FREE_RESEARCH_ENABLED",
+        "PREDICTION_MARKETS_ENABLED",
+        "RESOLUTION_SOURCE_ENABLED",
+        "GEMINI_SEARCH_ENABLED",
+        "BACKTEST_TOKEN_SOURCE",
+        "METACULUS_TOKEN",
+    ):
+        monkeypatch.setenv(flag, "unset-by-test")
+
+
+def test_sanitize_prefers_backtest_token_for_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    _register_sanitizer_writes(monkeypatch)
+    monkeypatch.setenv("FREE_MODE", "true")
+    monkeypatch.setenv("METACULUS_TOKEN", "bot")
+    monkeypatch.setenv("METACULUS_BACKTEST_TOKEN", " personal ")
+    bf._sanitize_environment()
+    assert os.environ["METACULUS_TOKEN"] == "personal"
+    assert "METACULUS_BACKTEST_TOKEN" not in os.environ
+    assert os.environ["BACKTEST_TOKEN_SOURCE"] == "METACULUS_BACKTEST_TOKEN"
+
+
+def test_sanitize_falls_back_to_bot_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    _register_sanitizer_writes(monkeypatch)
+    monkeypatch.setenv("FREE_MODE", "true")
+    monkeypatch.setenv("METACULUS_TOKEN", "bot")
+    monkeypatch.setenv("METACULUS_BACKTEST_TOKEN", "")
+    bf._sanitize_environment()
+    assert os.environ["METACULUS_TOKEN"] == "bot"
+    assert os.environ["BACKTEST_TOKEN_SOURCE"] == "METACULUS_TOKEN"
+
+
+def test_backtest_token_only_in_backtest_workflow() -> None:
+    from pathlib import Path
+
+    wf = Path(__file__).resolve().parent.parent / ".github" / "workflows"
+    users = sorted(f.name for f in wf.glob("*.y*ml") if "METACULUS_BACKTEST_TOKEN" in f.read_text())
+    assert users == ["backtest_free.yaml"]
+
+
 def test_binary_median_and_scores() -> None:
     agg = bf.aggregate([_bin(0.2), _bin(0.9), _bin(0.6)])
     assert agg.binary == pytest.approx(0.6)
