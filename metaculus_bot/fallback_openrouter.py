@@ -13,6 +13,7 @@ from metaculus_bot.constants import (
     OPENROUTER_API_KEY_ENV,
     credit_alerts_active,
     donated_openrouter_key_enabled,
+    free_mode_enabled,
     gemini_use_donated_openrouter_key,
 )
 from metaculus_bot.credit_telemetry import (
@@ -24,6 +25,7 @@ from metaculus_bot.credit_telemetry import (
     llm_call_metadata,
     plain_llm_key_alias,
 )
+from metaculus_bot.free_mode import build_free_utility_llm
 from metaculus_bot.llm_retry import llm_status_code
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -475,7 +477,15 @@ def build_llm_with_openrouter_fallback(model: str, *, role: str | None = None, *
     ``role`` names the spend line every completion of this LLM is booked under in the
     ``CREDIT_ROLE_SPEND`` ledger (``credit_telemetry.llm_call_metadata`` lists the roles in
     use). Pass it at every production call site; a missing role books as ``untagged``.
+
+    Under ``FREE_MODE`` the requested (paid) ``model`` is ignored and the free utility chain is
+    returned instead (``free_mode.build_free_utility_llm``): this builder is the one seam every
+    support-role LLM goes through, so no paid slug can be built here while the mode is on.
     """
+    if free_mode_enabled():
+        return build_free_utility_llm(
+            role=role, response_format=kwargs.get("response_format"), timeout=kwargs.get("timeout")
+        )
     if should_route_via_donated_key(model):
         special_key = os.getenv(OAI_ANTH_OPENROUTER_KEY_ENV)
         general_key = os.getenv(OPENROUTER_API_KEY_ENV)
