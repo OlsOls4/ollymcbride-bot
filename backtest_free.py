@@ -82,7 +82,7 @@ from forecasting_tools.data_models.numeric_report import NumericReport  # noqa: 
 from metaculus_bot import prompts as prompts_module  # noqa: E402
 from metaculus_bot.ablation.window_patch import compute_mid_window_today  # noqa: E402
 from metaculus_bot.api_preflight import verify_metaculus_api_identity  # noqa: E402
-from metaculus_bot.backtest.question_prep import fetch_resolved_questions  # noqa: E402
+from metaculus_bot.backtest import question_prep  # noqa: E402
 from metaculus_bot.backtest.scoring import (  # noqa: E402
     mc_log_score_from_report,
     numeric_crps_from_report,
@@ -368,35 +368,77 @@ def _type_name(q: Any) -> str:
     return "numeric"
 
 
-async def _fetch_questions(args: argparse.Namespace) -> tuple[list[Any], dict[int, Any], list[str]]:
+def _resolution_fields(q: Any) -> dict[str, Any]:
+    """Resolution-related raw API fields of a RESOLVED question (fetch diagnostics only)."""
+    api = getattr(q, "api_json", None) or {}
+    qobj = api.get("question") if isinstance(api.get("question"), dict) else api
+    if not isinstance(qobj, dict):
+        return {}
+    picked = {k: qobj.get(k) for k in qobj if "resol" in k.lower() or k in ("status", "type")}
+    return {"post_id": getattr(q, "id_of_post", None), "question_keys": sorted(qobj)[:60], **picked}
 
+
+async def _usable_from_tournament(
+    slug: str, args: argparse.Namespace, diag: dict[str, Any]
+) -> tuple[list[Any], dict[int, Any]]:
+    """Resolved questions with ground truth for one tournament.
+
+    When the list endpoint returns resolved questions without a ``resolution`` value (seen on
+    2026-10-12 for every question of a bot tournament), each post is re-read from the individual
+    question endpoint, which carries the resolution.
+    """
+    resolved_after_dt, resolved_before_dt = question_prep._parse_resolution_window(args.resolved_after, None)
+    raw = await question_prep._fetch_with_retries(
+        tournament=slug, count=args.per_tournament_cap * 3, min_forecasters=args.min_forecasters
+    )
+    kept, gts, skips = question_prep._filter_and_extract(raw, resolved_after_dt, resolved_before_dt)
+    entry: dict[str, Any] = {"raw": len(raw), "kept_from_list": len(kept), "skips": skips}
+    entry["samples"] = [_resolution_fields(q) for q in raw[:2]]
+    if not kept and raw:
+        refetched: list[Any] = []
+        for q in raw[: args.per_tournament_cap * 2]:
+            post_id = getattr(q, "id_of_post", None)
+            if post_id is None:
+                continue
+            try:
+                full = await asyncio.to_thread(MetaculusApi.get_question_by_post_id, post_id)
+            except Exception as exc:  # noqa: BLE001  # HARNESS-SCAN-EXEMPT-broad-except  # one unreadable post must not abort the fetch
+                entry.setdefault("refetch_errors", []).append(f"{post_id}: {str(exc)[:120]}")
+                continue
+            if not isinstance(full, list):
+                refetched.append(full)
+        kept, gts, skips = question_prep._filter_and_extract(refetched, resolved_after_dt, resolved_before_dt)
+        entry.update({"refetched": len(refetched), "kept_after_refetch": len(kept), "skips_after_refetch": skips})
+        entry["refetch_samples"] = [_resolution_fields(q) for q in refetched[:2]]
+    diag[slug] = entry
+    clean = [question_prep._prepare_question_for_backtest(q) for q in kept]
+    return clean, gts
+
+
+async def _fetch_questions(args: argparse.Namespace) -> tuple[list[Any], dict[int, Any], list[str]]:
     questions: list[Any] = []
     truths: dict[int, Any] = {}
     used: list[str] = []
+    diag: dict[str, Any] = {}
     for raw_slug in [t.strip() for t in args.tournaments.split(",") if t.strip()]:
-        slug = raw_slug
-        if raw_slug == "CURRENT_MINIBENCH":
-            slug = str(MetaculusApi.CURRENT_MINIBENCH_ID)
+        slug = str(MetaculusApi.CURRENT_MINIBENCH_ID) if raw_slug == "CURRENT_MINIBENCH" else raw_slug
         try:
-            qs = await fetch_resolved_questions(
-                total_questions=args.per_tournament_cap,
-                resolved_after=args.resolved_after,
-                tournament=slug,
-                min_forecasters=args.min_forecasters,
-            )
+            qs, gts = await _usable_from_tournament(slug, args, diag)
         except Exception as exc:  # noqa: BLE001  # HARNESS-SCAN-EXEMPT-broad-except  # an unknown/empty tournament slug must not abort the run
             logger.warning("Tournament %s: fetch failed (%s)", slug, str(exc)[:200])
+            diag[slug] = {"error": str(exc)[:300]}
             continue
         added = 0
-        for q in qs.questions:
+        for q in qs:
             if q.id_of_question in truths:
                 continue
             questions.append(q)
-            truths[q.id_of_question] = qs.ground_truths[q.id_of_question]
+            truths[q.id_of_question] = gts[q.id_of_question]
             added += 1
         logger.info("Tournament %s: %d usable resolved questions", slug, added)
         if added:
             used.append(slug)
+    _write_json("backtests/fetch_diagnostics.json", diag)
     # Stratified sample: ~half binary, quarter MC, quarter numeric (fill from what exists).
     rng = random.Random(args.seed)  # noqa: S311  # sampling, not crypto
     by_type: dict[str, list[Any]] = {}
@@ -532,6 +574,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:  # noqa: C901, PLR091
     for v in variants:
         deltas.get(v.name) or (float("nan"),) * 4
     return out
+
+
+def _write_json(path: str, data: Any) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(data, indent=2, default=str))
 
 
 def _write_outputs(out: dict[str, Any], report: str) -> None:
