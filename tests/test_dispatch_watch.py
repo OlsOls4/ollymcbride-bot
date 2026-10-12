@@ -69,7 +69,7 @@ class TestWorkflowParsing:
     def test_the_real_bot_workflows_parse(self):
         specs = load_bot_workflows()
         by_stem = {spec.stem: spec for spec in specs}
-        assert {"run_bot_on_tournament", "run_bot_on_metaculus_cup", "run_bot_on_mantic"} <= set(by_stem)
+        assert {"run_bot_on_tournament", "run_bot_on_metaculus_cup", "run_bot_on_minibench"} <= set(by_stem)
         for spec in specs:
             assert spec.display_name.startswith("Forecast on"), spec
             assert all(len(entry.split()) == 5 for entry in spec.cron_entries), spec
