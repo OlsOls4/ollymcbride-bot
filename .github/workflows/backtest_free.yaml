@@ -1,0 +1,130 @@
+name: Backtest (FREE_MODE, resolved questions)
+
+# Zero-cost backtest of the free model chains on RESOLVED questions only (backtest_free.py).
+# workflow_dispatch ONLY: no schedule, no push trigger. It never publishes to Metaculus
+# (is_benchmarking=True, publish_reports_to_metaculus=False) and never uses OpenRouter: the
+# OPENROUTER_API_KEY secret is deliberately NOT wired, so the live bot's 50 requests/day
+# OpenRouter :free budget is untouched. Members default to NVIDIA NIM + Gemini Flash-Lite; the
+# Gemini 3.x Flash member (about 20 requests/day, shared with the live bot) is opt-in via
+# flash_questions and capped at 25 in code.
+#
+# Results: the job's step summary (markdown table), ::notice annotations with the key numbers,
+# and the "free-backtest" artifact (backtests/free_backtest_results.json + report + log).
+
+on:
+  workflow_dispatch:
+    inputs:
+      num_questions:
+        description: "Resolved questions to sample (mixed types)"
+        default: "36"
+      tournaments:
+        description: "Comma-separated tournament slugs (CURRENT_MINIBENCH = the current MiniBench)"
+        default: "fall-futureeval-2026,summer-futureeval-2026,CURRENT_MINIBENCH,metaculus-cup-fall-2026"
+      resolved_after:
+        description: "Only questions resolved on/after this date (YYYY-MM-DD)"
+        default: "2026-06-01"
+      members:
+        description: "Comma-separated free model ids (no openrouter/)"
+        default: "nvidia_nim/moonshotai/kimi-k3,nvidia_nim/z-ai/glm-5.3,nvidia_nim/deepseek-ai/deepseek-v4.1-flash,gemini/gemini-3.5-flash-lite,gemini/gemini-3.1-flash-lite"
+      flash_questions:
+        description: "Also run gemini-3.8-flash on the first K questions (max 25; shares the live quota)"
+        default: "0"
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    # Free-tier pacing makes this slow (NIM ~30/min shared, Flash-Lite 12/min per model).
+    timeout-minutes: 330
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        timeout-minutes: 5
+      - uses: astral-sh/setup-uv@v7
+        timeout-minutes: 5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: uv sync --no-dev --frozen
+      - name: Free research smoke (GDELT + Wikipedia reachability, no secrets)
+        # Not part of the scores: the backtest hard-disables live research (leakage). This only
+        # shows whether the keyless free sources answer from a GitHub runner.
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          FREE_MODE: "true"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          uv run --frozen --no-dev python - <<'PY'
+          import asyncio, os
+          from types import SimpleNamespace
+          from metaculus_bot.research.free_sources import gather_free_sources
+          q = SimpleNamespace(question_text="Will the Federal Reserve cut interest rates at its next FOMC meeting?", id_of_question=0)
+          text = asyncio.run(gather_free_sources(q))
+          gdelt = "GDELT Project" in text
+          wiki = "Wikipedia" in text
+          print(f"::notice title=Free research smoke::chars={len(text)} gdelt={gdelt} wikipedia={wiki}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write(f"### Free research smoke\n\nchars={len(text)}, GDELT section={gdelt}, Wikipedia section={wiki}\n\n")
+              fh.write("```\n" + "\n".join(text.splitlines()[:12]) + "\n```\n")
+          PY
+      - name: Run free backtest
+        id: run_backtest
+        shell: bash
+        timeout-minutes: 300
+        env:
+          FREE_MODE: "true"
+          PYTHONUNBUFFERED: "1"
+          DISABLE_AIOHTTP_TRANSPORT: "true"
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          # Optional free keys (empty when the secret does not exist).
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          # Paid / quota-shared paths off (also forced off in code under FREE_MODE).
+          NATIVE_SEARCH_ENABLED: "false"
+          GAP_FILL_ENABLED: "false"
+          GAP_FILL_V2_ENABLED: "false"
+          RESOLUTION_SOURCE_URL_CONTEXT_ENABLED: "false"
+          GEMINI_SEARCH_ENABLED: "false"
+          PREDICTION_MARKETS_ENABLED: "false"
+          RESOLUTION_SOURCE_ENABLED: "false"
+          FINANCIAL_DATA_ENABLED: "false"
+          TS_ANCHOR_ENABLED: "false"
+          PROBABILISTIC_TOOLS_ENABLED: "false"
+          NUMERIC_STACKING_ENABLED: "false"
+          BINARY_STACKING_ENABLED: "false"
+          MC_STACKING_ENABLED: "false"
+          FREE_RESEARCH_ENABLED: "false"
+          OPENAI_AGENTS_DISABLE_TRACING: "true"
+          IN_NUM_QUESTIONS: ${{ inputs.num_questions }}
+          IN_TOURNAMENTS: ${{ inputs.tournaments }}
+          IN_RESOLVED_AFTER: ${{ inputs.resolved_after }}
+          IN_MEMBERS: ${{ inputs.members }}
+          IN_FLASH_QUESTIONS: ${{ inputs.flash_questions }}
+        run: |
+          mkdir -p backtests
+          uv run --frozen --no-dev python backtest_free.py \
+            --num-questions "$IN_NUM_QUESTIONS" \
+            --tournaments "$IN_TOURNAMENTS" \
+            --resolved-after "$IN_RESOLVED_AFTER" \
+            --members "$IN_MEMBERS" \
+            --flash-questions "$IN_FLASH_QUESTIONS" 2>&1 | tee "backtests/run_${GITHUB_RUN_ID}.log"
+      - name: Upload results
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-backtest
+          path: backtests/
+          retention-days: 30
+          if-no-files-found: warn
