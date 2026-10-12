@@ -191,3 +191,18 @@ def test_orchestrator_selects_free_sources_only_when_enabled(monkeypatch: pytest
     monkeypatch.setenv("FREE_RESEARCH_ENABLED", "false")
     names = [n for _, n in _orch()._select_research_providers()]
     assert "free_sources" not in names
+
+
+async def test_gdelt_429_is_retried_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def _gdelt(_p: dict[str, str]) -> Any:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("HTTP 429: Please limit requests to one every 5 seconds")
+        return {"articles": [{"title": "Headline", "url": "https://g.test/a", "seendate": "20261011T000000Z"}]}
+
+    monkeypatch.setattr(free_sources, "_get_json", _fake_get({"gdelt": _gdelt, "wiki_search": {}, "wiki_pages": {}}))
+    hits = await free_sources._gdelt_news(None, ["Federal Reserve", "rates"])  # type: ignore[arg-type]
+    assert len(calls) == 2
+    assert hits[0].title == "Headline"
