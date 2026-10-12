@@ -92,6 +92,17 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
               fh.write("### Free research smoke\n\n" + "\n".join(f"- {n}" for n in notes) + "\n\n")
           PY
+      - name: Require the read-only backtest token
+        # Bot tokens get resolution=null from the API, so a backtest without the personal
+        # (non-bot) read-only token cannot score anything. Fail fast instead of burning quota.
+        env:
+          METACULUS_BACKTEST_TOKEN: ${{ secrets.METACULUS_BACKTEST_TOKEN }}
+        run: |
+          if [ -z "$METACULUS_BACKTEST_TOKEN" ]; then
+            echo "::error title=Missing secret::METACULUS_BACKTEST_TOKEN is empty or not set. Add it under Settings > Secrets and variables > Actions, then re-dispatch."
+            exit 1
+          fi
+          echo "::notice title=Backtest token::METACULUS_BACKTEST_TOKEN present (read-only fetches only)"
       - name: Run free backtest
         id: run_backtest
         shell: bash
@@ -101,6 +112,9 @@ jobs:
           PYTHONUNBUFFERED: "1"
           DISABLE_AIOHTTP_TRANSPORT: "true"
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          # Personal non-bot token, READ-ONLY: backtest_free.py uses it (falling back to
+          # METACULUS_TOKEN) only to fetch resolved questions; this workflow never publishes.
+          METACULUS_BACKTEST_TOKEN: ${{ secrets.METACULUS_BACKTEST_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           # Optional free keys (empty when the secret does not exist).
