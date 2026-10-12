@@ -889,33 +889,41 @@ FREE_MODE_FORECASTER_CHAINS: tuple[tuple[str, ...], ...] = (
         "nvidia_nim/moonshotai/kimi-k3",
         "openrouter/thinkingmachines/inkling:free",
         "nvidia_nim/z-ai/glm-5.3",
+        "mistral/mistral-large-latest",
         "gemini/gemini-3.5-flash-lite",
     ),
     (
         "openrouter/thinkingmachines/inkling:free",
         "nvidia_nim/moonshotai/kimi-k3",
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "groq/openai/gpt-oss-120b",
         "gemini/gemini-3.1-flash-lite",
     ),
     (
         "gemini/gemini-3.8-flash",
         "nvidia_nim/z-ai/glm-5.3",
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "mistral/mistral-medium-latest",
         "gemini/gemini-3.5-flash-lite",
     ),
     (
         "nvidia_nim/z-ai/glm-5.3",
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
         "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+        "groq/openai/gpt-oss-120b",
         "gemini/gemini-3.1-flash-lite",
     ),
     (
         "openrouter/apodex/apodex-1.1-mini:free",
         "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
         "openrouter/dots-studio/dots-3-note-preview:free",
+        "groq/qwen/qwen3.8-27b",
         "gemini/gemini-3.5-flash-lite",
     ),
 )
+# Groq / Mistral links (added 2026-10-12) sit just before each slot's Flash-Lite floor: they only
+# serve when the stronger links above have failed, and they drop out entirely while their
+# optional keys are unset, so the live chains are unchanged until Olly adds those secrets.
 
 # Parser, summarizer, market ranker/author, page digest, financial classifier and the (disabled)
 # stacker/analyzer slots. Flash-Lite leads because it has the largest free daily allowance
@@ -926,6 +934,7 @@ FREE_MODE_UTILITY_CHAIN: tuple[str, ...] = (
     "gemini/gemini-3.5-flash-lite",
     "gemini/gemini-3.1-flash-lite",
     "nvidia_nim/google/gemma-4-31b-it",
+    "groq/openai/gpt-oss-20b",
     "openrouter/google/gemma-4-31b-it:free",
 )
 
