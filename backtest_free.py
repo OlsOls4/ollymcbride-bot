@@ -50,6 +50,15 @@ def _sanitize_environment() -> list[str]:
     removed = [k for k in list(os.environ) if k in _REMOVED_KEYS or k.startswith("OPENROUTER")]
     for k in removed:
         os.environ.pop(k, None)
+    # Read-only fetch token: METACULUS_BACKTEST_TOKEN (a personal, non-bot account, which the API
+    # gives resolution values) wins over the bot's METACULUS_TOKEN. This script never publishes, so
+    # the token is only used to read questions and their resolutions.
+    backtest_token = os.environ.pop("METACULUS_BACKTEST_TOKEN", "").strip()
+    if backtest_token:
+        os.environ["METACULUS_TOKEN"] = backtest_token
+        os.environ["BACKTEST_TOKEN_SOURCE"] = "METACULUS_BACKTEST_TOKEN"  # noqa: S105  # a secret NAME, not a value
+    else:
+        os.environ["BACKTEST_TOKEN_SOURCE"] = "METACULUS_TOKEN" if os.getenv("METACULUS_TOKEN") else "none"
     os.environ["FREE_RESEARCH_ENABLED"] = "false"
     for flag in ("PREDICTION_MARKETS_ENABLED", "RESOLUTION_SOURCE_ENABLED", "GEMINI_SEARCH_ENABLED"):
         os.environ[flag] = "false"
@@ -614,6 +623,7 @@ def main() -> None:
     if args.flash_questions > 25:
         raise SystemExit("--flash-questions is capped at 25 to protect the live bot's Gemini Flash quota")
     logger.info("Removed from env for this run (names only): %s", _REMOVED_AT_START)
+    logger.info("Metaculus fetch token (read-only): %s", os.getenv("BACKTEST_TOKEN_SOURCE", "unknown"))
     verify_metaculus_api_identity()
     asyncio.run(run(args))
 
