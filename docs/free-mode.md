@@ -31,7 +31,7 @@ optional free keys add capacity. With `FREE_MODE` unset the code path is upstrea
 
 | Slot | 1st | 2nd | 3rd | 4th (optional key) | Floor |
 |---|---|---|---|---|---|
-| 1 | nvidia_nim/moonshotai/kimi-k3 | openrouter/thinkingmachines/inkling:free | nvidia_nim/z-ai/glm-5.3 | mistral/mistral-large-latest | gemini/gemini-3.5-flash-lite |
+| 1 | nvidia_nim/moonshotai/kimi-k3 | openrouter/thinkingmachines/inkling:free | nvidia_nim/z-ai/glm-5.3 | mistral/mistral-medium-latest | gemini/gemini-3.5-flash-lite |
 | 2 | openrouter/thinkingmachines/inkling:free | nvidia_nim/moonshotai/kimi-k3 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | groq/openai/gpt-oss-120b | gemini/gemini-3.1-flash-lite |
 | 3 | gemini/gemini-3.8-flash | nvidia_nim/z-ai/glm-5.3 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | mistral/mistral-medium-latest | gemini/gemini-3.5-flash-lite |
 | 4 | nvidia_nim/z-ai/glm-5.3 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | nvidia_nim/deepseek-ai/deepseek-v4.1-flash | groq/openai/gpt-oss-120b | gemini/gemini-3.1-flash-lite |
@@ -85,9 +85,58 @@ artifact (`backtests/free_backtest_results.json`, `free_backtest_report.md`,
   `fall-futureeval-2026` and current MiniBench slugs returned 0 resolved questions. With no
   ground truth there is nothing to score, so the chain order and members were left as they were.
 - The script stops with "Only 0 resolved questions found" in that case, and no model call is made.
-- Likely next step: try a token from a non-bot Metaculus account (an assumption that the API
-  redacts resolutions for bot accounts; not confirmed), or a tournament whose resolutions the
-  token can read. Then dispatch `backtest_free.yaml` again (defaults: 36 questions, 5 members).
+- (Superseded, see "Resolution access" below: the cause is Metaculus's API access policy, not a
+  bot-account redaction.)
 - Smoke step: Wikipedia answered from the runner. GDELT returned HTTP 429 ("one request every 5
   seconds") on its first request, because runners share IPs. GDELT now retries once after a slot;
   it stays best-effort and fails soft.
+
+### Resolution access (cause found 12 Oct 2026, late evening)
+
+- Metaculus changed API data access in March 2026 (github.com/Metaculus/metaculus/issues/4466,
+  public post metaculus.com/notebooks/42554): an account gets question text and the
+  **resolution value only for questions that account has itself predicted** (detected through
+  `my_forecasts`, which needs `with_cp=true`; forecasting-tools' list call already sends it).
+  Separately, a "bot benchmarking" access tier gives resolutions for about 250 resolved
+  questions in project **32979**. The public website still shows "Resolved Yes/No".
+- So a new personal account with no forecasts gets `resolution: null` exactly like the bot. Run
+  38312527791 confirmed this with `METACULUS_BACKTEST_TOKEN` (token in use, still 180/180 null in
+  summer-futureeval-2026, 2/2 in metaculus-cup-fall-2026).
+- Rerun 38314063448 (same token, tournaments `32979,bot-benchmarking,summer-futureeval-2026,
+  metaculus-cup-fall-2026`, resolved after 2026-01-01): project 32979 is listable (180 resolved
+  posts) but every resolution is null too, so the personal account does not have the
+  bot-benchmarking tier; the `bot-benchmarking` slug returns an HTTP error. No model was called,
+  no scores, live chains/ensemble unchanged. The backtest was not retried again.
+- Ways to get ground truth, all free: (a) the bot's own questions once they resolve (MiniBench
+  questions resolve within days to weeks, so the bot token will start to see resolutions of
+  questions it forecast; still a valid backtest of *other* free models on resolved questions);
+  (b) ask Metaculus for the bot-benchmarking tier (project 32979) or via the non-commercial Data
+  Needs Form on metaculus.com/api; (c) questions Olly's personal account has forecast, once
+  resolved. Scraping the website was not used (bot protection, and terms).
+- Token wiring: `backtest_free.yaml` passes `METACULUS_BACKTEST_TOKEN` (personal, non-bot,
+  read-only) only to the backtest step; `backtest_free.py` swaps it into `METACULUS_TOKEN` for
+  question/resolution fetches (falls back to the bot token) and never publishes. A "Require the
+  read-only backtest token" step fails fast with an `::error` when the secret is empty. A test
+  pins that no other workflow references the secret.
+
+### Free key health (`free_keys_health.yaml`, dispatch-only, infra only)
+
+One tiny call per optional provider through the bot's own code paths (Tavily/Exa/Serper
+backends in `research/free_sources.py`; Groq/Mistral `/v1/models` plus one "Reply OK" chat via
+litellm). Prints statuses only, touches no Metaculus question. Run 38313534110 (12 Oct 2026):
+
+| Provider | Result |
+|---|---|
+| Tavily | OK (5 results) |
+| Exa (free key) | OK (5 results). Exa usage draws account credits; auto-recharge settings were not touched. |
+| Serper | OK (10 results) |
+| Groq | OK: all 3 allow-listed ids on its model list; chat on gpt-oss-20b answered |
+| Mistral | Key valid, but `mistral-large-latest` is not on its model list, and a chat on mistral-small-latest got HTTP 429 (Free-mode limits) |
+
+Fix pushed: `mistral-large-latest` removed from the allow-list; chain slot 1's Mistral link is now
+`mistral-medium-latest`. Mistral links sit just before the Flash-Lite floor, so a 429 there only
+costs one fallback hop. Live tournament/MiniBench runs since the keys were added (to 23:15 BST)
+had no new questions ("No forecasts attempted"), so the keyed sources have not yet been used in a
+live forecast; the health run is the evidence they work from a runner. Search order in live
+runs is Tavily first, then Exa, then Serper (first backend with hits wins, capped at 40
+searches per run).
