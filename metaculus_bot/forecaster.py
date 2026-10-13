@@ -39,11 +39,13 @@ from metaculus_bot.constants import (
     CONDITIONAL_STACKING_NUMERIC_NORMALIZED_THRESHOLD,
     DEFAULT_MAX_CONCURRENT_RESEARCH,
     FORECASTER_SOFT_DEADLINE,
+    FREE_MODE_FORECASTER_SOFT_DEADLINE_S,
     MIN_FORECASTERS_TO_PUBLISH,
     PER_QUESTION_WALL_CLOCK_DEADLINE,
     TIME_BUDGET_MIN_VIABLE_S,
     TS_ANCHOR_CHART_ENABLED_ENV,
     env_flag_enabled,
+    free_mode_enabled,
 )
 from metaculus_bot.degradation_counters import (
     DegradationSnapshot,
@@ -845,10 +847,13 @@ class TemplateForecaster(CompactLoggingForecastBot):
         the base runners; None (the default) when the chart flag is off.
         """
         start = time.monotonic()
+        # FREE_MODE: free chains walk several slow links inside one slot and budget themselves
+        # below this (free_mode.FreeModelChainLlm), so they get the longer free-mode deadline.
+        soft_deadline = FREE_MODE_FORECASTER_SOFT_DEADLINE_S if free_mode_enabled() else FORECASTER_SOFT_DEADLINE
         try:
             return await asyncio.wait_for(
                 self._make_prediction(question, research, llm, chart_b64),
-                timeout=FORECASTER_SOFT_DEADLINE,
+                timeout=soft_deadline,
             )
         except TimeoutError:
             elapsed = time.monotonic() - start
@@ -857,7 +862,7 @@ class TemplateForecaster(CompactLoggingForecastBot):
                 "SOFT_DEADLINE: forecaster model=%s qid=%s exceeded %ds (elapsed=%.0fs); dropping this forecaster",
                 llm.model,
                 qid,
-                FORECASTER_SOFT_DEADLINE,
+                soft_deadline,
                 elapsed,
             )
             raise
