@@ -14,6 +14,7 @@ from metaculus_bot.constants import (
     BINARY_STACKING_ENABLED_ENV,
     FREE_MODE_FORECASTER_CHAINS,
     FREE_MODE_GEMINI_GROUNDING_MODEL,
+    FREE_MODE_OPTIONAL_PROVIDERS,
     FREE_MODE_UTILITY_CHAIN,
     GAP_FILL_ENABLED_ENV,
     GAP_FILL_V2_ENABLED_ENV,
@@ -156,8 +157,8 @@ def test_build_drops_links_without_a_key(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    chain = build_free_chain(FREE_MODE_FORECASTER_CHAINS[0], role="forecaster:free1", timeout=10, max_tokens=100)
-    assert [link.model for link in chain.links] == ["openrouter/thinkingmachines/inkling:free"]
+    chain = build_free_chain(FREE_MODE_FORECASTER_CHAINS[1], role="forecaster:free2", timeout=10, max_tokens=100)
+    assert [link.model for link in chain.links] == ["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]
     assert chain.links[0].litellm_kwargs["api_key"] == "or-test"
     assert chain.links[0].allowed_tries == 1
 
@@ -248,12 +249,14 @@ async def test_falls_back_on_429_and_annotates(monkeypatch: pytest.MonkeyPatch) 
     chain, calls = _stub_chain(
         monkeypatch,
         {
-            "openrouter/thinkingmachines/inkling:free": [_rate_limit("Rate limit exceeded: free-models-per-min")],
+            "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": [
+                _rate_limit("Rate limit exceeded: free-models-per-min")
+            ],
             "nvidia_nim/moonshotai/kimi-k3": ["PROBABILITY: 42%"],
         },
     )
     text = await chain.invoke("q")
-    assert calls == ["openrouter/thinkingmachines/inkling:free", "nvidia_nim/moonshotai/kimi-k3"]
+    assert calls == ["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia_nim/moonshotai/kimi-k3"]
     assert text.endswith("PROBABILITY: 42%")
     assert "answered by `nvidia_nim/moonshotai/kimi-k3`" in text.splitlines()[0]
 
@@ -267,7 +270,7 @@ async def test_daily_quota_marks_bucket_exhausted_for_the_run(monkeypatch: pytes
     chain, calls = _stub_chain(
         monkeypatch,
         {
-            "openrouter/thinkingmachines/inkling:free": [
+            "openrouter/apodex/apodex-1.1-mini:free": [
                 _rate_limit("Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000")
             ],
             "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": ["never called"],
@@ -278,7 +281,7 @@ async def test_daily_quota_marks_bucket_exhausted_for_the_run(monkeypatch: pytes
     assert (await chain.invoke("q")).endswith("second")
     # The second OpenRouter link and the second call's OpenRouter attempt were skipped.
     assert calls == [
-        "openrouter/thinkingmachines/inkling:free",
+        "openrouter/apodex/apodex-1.1-mini:free",
         "gemini/gemini-3.1-flash-lite",
         "gemini/gemini-3.1-flash-lite",
     ]
@@ -463,8 +466,288 @@ def test_groq_daily_cap_marks_bucket_exhausted() -> None:
     assert "groq" in free_mode._EXHAUSTED
 
 
-def test_groq_and_mistral_sit_before_the_floor_never_as_slot_leads() -> None:
+def test_optional_key_providers_sit_in_the_tail_never_lead_or_floor() -> None:
+    optional = tuple(f"{p}/" for p in FREE_MODE_OPTIONAL_PROVIDERS)
     for chain in FREE_MODE_FORECASTER_CHAINS:
-        assert not chain[0].startswith(("groq/", "mistral/"))
-        extras = [i for i, m in enumerate(chain) if m.startswith(("groq/", "mistral/"))]
-        assert all(i == len(chain) - 2 for i in extras)
+        assert not chain[0].startswith(optional)
+        assert not chain[-1].startswith(optional)
+        assert all(i >= 2 for i, m in enumerate(chain) if m.startswith(optional))
+
+
+# --- 2026-10-13 serving fixes: denied models, budgets, streaming, retries, new providers ---
+
+
+@pytest.mark.parametrize(
+    "model", ["openrouter/thinkingmachines/inkling:free", "openrouter/thinkingmachines/inkling-small:free"]
+)
+def test_agentic_harness_only_models_are_denied(model: str) -> None:
+    with pytest.raises(NotFreeModelError, match="agentic"):
+        assert_free_model(model)
+
+
+def test_no_live_chain_carries_a_dead_or_hopeless_link() -> None:
+    every = [m for chain in FREE_MODE_FORECASTER_CHAINS for m in chain]
+    assert not any("inkling" in m for m in every)
+    assert not any(m.startswith("mistral/") for m in every)  # free key: 0 RPM on medium/small
+    assert "groq/qwen/qwen3.8-27b" not in every  # 1K output-tokens/min on Groq Free
+
+
+def test_floors_try_3_5_flash_lite_before_3_1() -> None:
+    for chain in FREE_MODE_FORECASTER_CHAINS:
+        assert chain[-2:] == ("gemini/gemini-3.5-flash-lite", "gemini/gemini-3.1-flash-lite")
+
+
+def test_links_have_no_hidden_sdk_retries(free_env: pytest.MonkeyPatch) -> None:
+    chain = build_free_chain(FREE_MODE_FORECASTER_CHAINS[0], role="x", timeout=10, max_tokens=100)
+    assert chain.links
+    assert all(link.litellm_kwargs["max_retries"] == 0 for link in chain.links)
+
+
+def test_slow_nim_models_are_streamed_with_a_longer_cap(free_env: pytest.MonkeyPatch) -> None:
+    from metaculus_bot.constants import FREE_MODE_NIM_SLOW_LINK_TIMEOUT_S, FREE_MODE_NIM_SLOW_MODELS
+
+    chain = build_free_chain(
+        (*FREE_MODE_NIM_SLOW_MODELS, "nvidia_nim/moonshotai/kimi-k3"), role="x", timeout=240, max_tokens=100
+    )
+    slow, plain = chain.links[:-1], chain.links[-1]
+    assert all(isinstance(link, free_mode._StreamedLink) for link in slow)
+    assert all(link.total_timeout_s == FREE_MODE_NIM_SLOW_LINK_TIMEOUT_S for link in slow)
+    assert not isinstance(plain, free_mode._StreamedLink)
+
+
+def test_structured_output_links_are_never_streamed(free_env: pytest.MonkeyPatch) -> None:
+    chain = build_free_chain(
+        ("nvidia_nim/z-ai/glm-5.3",), role="x", timeout=10, max_tokens=100, response_format=_Schema
+    )
+    assert not isinstance(chain.links[0], free_mode._StreamedLink)
+
+
+class _Delta:
+    def __init__(self, content: str | None) -> None:
+        self.content = content
+
+
+class _Choice:
+    def __init__(self, content: str | None) -> None:
+        self.delta = _Delta(content)
+
+
+class _Chunk:
+    def __init__(self, content: str | None) -> None:
+        self.choices = [_Choice(content)]
+
+
+async def test_streamed_link_reassembles_content_and_uses_an_idle_timeout(
+    free_env: pytest.MonkeyPatch,
+) -> None:
+    seen: dict = {}
+
+    async def _fake_acompletion(**kwargs):
+        seen.update(kwargs)
+
+        async def _gen():
+            for piece in ("Reasoning done. ", None, "Probability: ", "37%"):
+                yield _Chunk(piece)
+
+        return _gen()
+
+    free_env.setattr(free_mode.litellm, "acompletion", _fake_acompletion)
+    chain = build_free_chain(("nvidia_nim/z-ai/glm-5.3",), role="x", timeout=10, max_tokens=100)
+    text = await chain.links[0].invoke("q")
+    assert text == "Reasoning done. Probability: 37%"
+    assert seen["stream"] is True
+    assert seen["timeout"] == free_mode.FREE_MODE_STREAM_IDLE_TIMEOUT_S
+
+
+async def test_streamed_link_empty_answer_raises(free_env: pytest.MonkeyPatch) -> None:
+    async def _fake_acompletion(**kwargs):
+        async def _gen():
+            yield _Chunk(None)
+
+        return _gen()
+
+    free_env.setattr(free_mode.litellm, "acompletion", _fake_acompletion)
+    chain = build_free_chain(
+        ("nvidia_nim/z-ai/glm-5.3", "gemini/gemini-3.5-flash-lite"), role="x", timeout=10, max_tokens=10
+    )
+
+    async def _floor(prompt, system_prompt=None):
+        return "floor"
+
+    free_env.setattr(chain.links[1], "invoke", _floor)
+    assert await chain.invoke("q") == "floor"
+
+
+def _tight_budget(monkeypatch: pytest.MonkeyPatch, reserve: float = 0.3, min_link: float = 0.05) -> None:
+    monkeypatch.setattr(free_mode, "FREE_MODE_FLOOR_RESERVE_S", reserve)
+    monkeypatch.setattr(free_mode, "FREE_MODE_MIN_LINK_S", min_link)
+
+
+async def test_budget_cuts_a_stalled_head_and_keeps_the_floors_reserve(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    import time
+
+    _tight_budget(monkeypatch)
+    for key in ("NVIDIA_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.setenv(key, "k")
+    chain = build_free_chain(
+        ("nvidia_nim/moonshotai/kimi-k3", "gemini/gemini-3.5-flash-lite"),
+        role="x",
+        timeout=60,
+        max_tokens=10,
+        budget_s=1.0,
+    )
+
+    async def _stall(prompt, system_prompt=None):
+        await asyncio.sleep(30)
+        return "never"
+
+    async def _floor(prompt, system_prompt=None):
+        return "floor"
+
+    monkeypatch.setattr(chain.links[0], "invoke", _stall)
+    monkeypatch.setattr(chain.links[1], "invoke", _floor)
+    t0 = time.monotonic()
+    text = await chain.invoke("q")
+    assert text.endswith("floor")
+    assert time.monotonic() - t0 < 1.0
+
+
+async def test_budget_skips_links_that_cannot_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _tight_budget(monkeypatch, reserve=5.0)
+    chain, calls = _stub_chain(
+        monkeypatch,
+        {"nvidia_nim/moonshotai/kimi-k3": ["never"], "gemini/gemini-3.5-flash-lite": ["floor"]},
+    )
+    chain.budget_s = 1.0  # head allowance = 1 - 5 < min link: skipped, the floor still runs
+    assert (await chain.invoke("q")).endswith("floor")
+    assert calls == ["gemini/gemini-3.5-flash-lite"]
+
+
+async def test_nim_plain_429_is_retried_on_the_same_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(free_mode, "FREE_MODE_RATE_LIMIT_BACKOFF_S", (0.0, 0.0))
+    chain, calls = _stub_chain(
+        monkeypatch,
+        {
+            "nvidia_nim/moonshotai/kimi-k3": [_rate_limit("Too Many Requests"), "PROBABILITY: 40%"],
+            "gemini/gemini-3.5-flash-lite": ["floor"],
+        },
+    )
+    assert await chain.invoke("q") == "PROBABILITY: 40%"
+    assert calls == ["nvidia_nim/moonshotai/kimi-k3", "nvidia_nim/moonshotai/kimi-k3"]
+
+
+async def test_nim_429_retries_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(free_mode, "FREE_MODE_RATE_LIMIT_BACKOFF_S", (0.0, 0.0))
+    chain, calls = _stub_chain(
+        monkeypatch,
+        {
+            "nvidia_nim/moonshotai/kimi-k3": [_rate_limit("Too Many Requests")] * 3,
+            "gemini/gemini-3.5-flash-lite": ["floor"],
+        },
+    )
+    assert (await chain.invoke("q")).endswith("floor")
+    assert calls.count("nvidia_nim/moonshotai/kimi-k3") == 3  # first try + 2 retries
+
+
+async def test_non_nim_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(free_mode, "FREE_MODE_RATE_LIMIT_BACKOFF_S", (0.0, 0.0))
+    chain, calls = _stub_chain(
+        monkeypatch,
+        {
+            "openrouter/apodex/apodex-1.1-mini:free": [_rate_limit("Rate limit exceeded: free-models-per-min")],
+            "gemini/gemini-3.5-flash-lite": ["floor"],
+        },
+    )
+    assert (await chain.invoke("q")).endswith("floor")
+    assert calls == ["openrouter/apodex/apodex-1.1-mini:free", "gemini/gemini-3.5-flash-lite"]
+
+
+async def test_pacing_slot_beyond_the_allowance_is_skipped_not_reserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(free_mode.time, "monotonic", lambda: 100.0)
+    assert await free_mode._pace("groq", 55.0, max_wait_s=10.0) is True  # first call starts now
+    assert await free_mode._pace("groq", 55.0, max_wait_s=10.0) is False  # next slot is 55 s away
+    assert free_mode._NEXT_START["groq"] == 155.0  # the refused call reserved nothing
+
+
+def test_groq_request_fits_the_free_8k_tokens_per_minute(free_env: pytest.MonkeyPatch) -> None:
+    free_env.setenv("GROQ_API_KEY", "gq")
+    chain = build_free_chain(("groq/openai/gpt-oss-120b",), role="x", timeout=10, max_tokens=32_000)
+    kwargs = chain.links[0].litellm_kwargs
+    assert kwargs["max_tokens"] == 2_500
+    assert kwargs["reasoning_effort"] == "low"
+    assert 4_600 + kwargs["max_tokens"] <= 8_000  # ~4.5K-token forecasting prompt
+
+
+def test_free_mode_deadlines_nest() -> None:
+    from metaculus_bot import constants as c
+
+    assert (
+        c.FREE_MODE_FORECASTER_CHAIN_BUDGET_S + c.FREE_MODE_UTILITY_LINK_TIMEOUT_S
+        <= c.FREE_MODE_FORECASTER_SOFT_DEADLINE_S
+    )
+    assert c.FREE_MODE_NIM_SLOW_LINK_TIMEOUT_S + c.FREE_MODE_FLOOR_RESERVE_S <= c.FREE_MODE_FORECASTER_CHAIN_BUDGET_S
+    assert c.FREE_MODE_FORECASTER_SOFT_DEADLINE_S > c.FORECASTER_SOFT_DEADLINE
+
+
+def test_forecaster_chains_carry_the_budget(free_env: pytest.MonkeyPatch) -> None:
+    from metaculus_bot.constants import FREE_MODE_FORECASTER_CHAIN_BUDGET_S
+
+    assert all(llm.budget_s == FREE_MODE_FORECASTER_CHAIN_BUDGET_S for llm in build_free_forecaster_llms())
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "zai/glm-4.7-flash",
+        "zai/glm-4.5-flash",
+        "cloudflare/@cf/openai/gpt-oss-120b",
+        "cloudflare/@cf/zai-org/glm-4.7-flash",
+        "gemini/gemma-4-31b-it",
+    ],
+)
+def test_new_free_models_allowed(model: str) -> None:
+    assert_free_model(model)
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["zai/glm-5.3-flash", "zai/glm-5.3", "cloudflare/@cf/moonshotai/kimi-k2.6", "cloudflare/@cf/zai-org/glm-5.2"],
+)
+def test_paid_or_paid_plan_models_on_new_providers_refused(model: str) -> None:
+    with pytest.raises(NotFreeModelError):
+        assert_free_model(model)
+
+
+def test_zai_and_cloudflare_links_drop_without_their_secrets(free_env: pytest.MonkeyPatch) -> None:
+    for env in ("ZAI_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+        free_env.delenv(env, raising=False)
+    free_env.setenv("CLOUDFLARE_API_TOKEN", "cf")  # token without account id is not enough
+    for chain in FREE_MODE_FORECASTER_CHAINS:
+        built = build_free_chain(chain, role="x", timeout=10, max_tokens=100)
+        assert not any(link.model.startswith(("zai/", "cloudflare/")) for link in built.links)
+
+
+def test_zai_and_cloudflare_links_are_openai_compatible(free_env: pytest.MonkeyPatch) -> None:
+    free_env.setenv("ZAI_API_KEY", "z")
+    free_env.setenv("CLOUDFLARE_API_TOKEN", "cf")
+    free_env.setenv("CLOUDFLARE_ACCOUNT_ID", "acct123")
+    chain = build_free_chain(
+        ("zai/glm-4.7-flash", "cloudflare/@cf/openai/gpt-oss-120b"), role="x", timeout=10, max_tokens=100
+    )
+    zai, cf = chain.links
+    assert zai.model == "zai/glm-4.7-flash"
+    assert zai.litellm_kwargs["model"] == "openai/glm-4.7-flash"
+    assert zai.litellm_kwargs["api_base"] == "https://api.z.ai/api/paas/v4"
+    assert zai.litellm_kwargs["api_key"] == "z"
+    assert cf.litellm_kwargs["model"] == "openai/@cf/openai/gpt-oss-120b"
+    assert cf.litellm_kwargs["api_base"] == "https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1"
+    assert cf.litellm_kwargs["api_key"] == "cf"
+    assert free_mode.quota_bucket(cf.model) == "cloudflare"
+
+
+def test_gemma_has_its_own_pacing_and_quota_bucket() -> None:
+    assert free_mode.quota_bucket("gemini/gemma-4-31b-it") == "gemini/gemma-4-31b-it"
+    from metaculus_bot.constants import FREE_MODE_MIN_INTERVAL_S
+
+    assert FREE_MODE_MIN_INTERVAL_S["gemma"] > 0
