@@ -960,18 +960,22 @@ FREE_MODE_DENIED_MODELS: dict[str, str] = {
 #   tried first and 3.1 only serves once 3.5's per-model daily quota is gone.
 # * Optional free providers (Z.ai GLM Flash, Cloudflare Workers AI, AI Studio Gemma) sit in the
 #   tails and drop out until their key exists.
+# 2026-10-13 health run 38381214605: NIM kimi-k2.6 404, AI Studio gemma-4-31b-it 500 and Z.ai
+# glm-4.7-flash 429 (code 1305 overloaded) failed, so their chain slots were swapped for links that
+# passed the same run (NIM nemotron-3-super, Cloudflare gpt-oss-120b, Groq gpt-oss-120b). They stay
+# allow-listed and can return once a health run shows them OK.
 FREE_MODE_FORECASTER_CHAINS: tuple[tuple[str, ...], ...] = (
     (
         "nvidia_nim/moonshotai/kimi-k3",
         "nvidia_nim/z-ai/glm-5.3-flash",
-        "gemini/gemma-4-31b-it",
-        "zai/glm-4.7-flash",
+        "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
+        "cloudflare/@cf/openai/gpt-oss-120b",
         "gemini/gemini-3.5-flash-lite",
         "gemini/gemini-3.1-flash-lite",
     ),
     (
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia_nim/moonshotai/kimi-k2.6",
+        "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
         "cloudflare/@cf/openai/gpt-oss-120b",
         "groq/openai/gpt-oss-120b",
         "gemini/gemini-3.5-flash-lite",
@@ -981,7 +985,7 @@ FREE_MODE_FORECASTER_CHAINS: tuple[tuple[str, ...], ...] = (
         "gemini/gemini-3.8-flash",
         "nvidia_nim/z-ai/glm-5.3-flash",
         "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b",
-        "gemini/gemma-4-31b-it",
+        "groq/openai/gpt-oss-120b",
         "gemini/gemini-3.5-flash-lite",
         "gemini/gemini-3.1-flash-lite",
     ),
