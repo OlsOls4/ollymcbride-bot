@@ -198,6 +198,7 @@ class TestBotWorkflowsArchiveTheirResearch:
         # invariant below or fail here. Silently escaping it is the failure mode that
         # cost us the three runs above.
         assert _BOT_WORKFLOWS == [
+            ".github/workflows/run_bot_on_market_pulse.yaml",
             ".github/workflows/run_bot_on_metaculus_cup.yaml",
             ".github/workflows/run_bot_on_minibench.yaml",
             ".github/workflows/run_bot_on_tournament.yaml",
