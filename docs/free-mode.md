@@ -219,3 +219,95 @@ Swaps made after this run (one fix-up push):
 - Chain 3: gemma-4-31b-it was replaced by Groq gpt-oss-120b.
 
 Z.ai, Gemma and kimi-k2.6 are still allow-listed and can go back into a chain once a health run shows them OK.
+
+## 13 Oct (afternoon): health re-probe, tournament run, market anchor
+
+### Health run [38390386053](https://github.com/OlsOls4/ollymcbride-bot/actions/runs/38390386053) (`free_keys_health.yaml`, chain=true)
+
+`scripts/free_keys_health.py` now probes every allow-listed Z.ai and Cloudflare id, both Gemma
+ids, and runs every non-floor live-chain link (plus the swapped-out candidates) end to end
+through `build_free_chain` with a realistic-size prompt (commit 676449d).
+
+| Model | Tiny probe | Bot chain path (full prompt) |
+|---|---|---|
+| NIM kimi-k3 | OK 10 s | OK 13 s |
+| NIM glm-5.3-flash | OK 25 s | OK 21 s |
+| NIM nemotron-3-super | OK 10 s | OK 18 s |
+| NIM nemotron-3-ultra | OK 9 s | OK 13 s |
+| NIM glm-5.3 | OK 6 s | OK 6 s |
+| NIM deepseek-v4.1-flash | raw stream timed out at 180 s | OK 284 s |
+| Cloudflare @cf/openai/gpt-oss-120b | HTTP 200 | OK 2 s |
+| Cloudflare glm-4.7-flash, nemotron-3-120b, gemma-4-26b | HTTP 200 | not in a chain |
+| Groq gpt-oss-120b | OK 1 s | OK 2 s |
+| Z.ai glm-4.7-flash | 429 code 1305 (overloaded) | OK 48 s |
+| Z.ai glm-4.5-flash | HTTP 200 | OK 19 s |
+| AI Studio gemma-4-31b-it | OK 51 s | FAIL: 500 |
+| AI Studio gemma-4-26b-a4b-it | FAIL: 500 | not probed |
+| NIM kimi-k2.6 | 404 | FAIL: model_unavailable |
+
+Every link in the live chains passed end to end, so no chain was swapped. Z.ai glm-4.5-flash
+passed both probes and can be considered for a tail slot; glm-4.7-flash is intermittent
+(overloaded on the tiny call, OK on the chain call); Gemma 4 and kimi-k2.6 stay out.
+
+### Tournament run 38390400790 (manual dispatch, a normal autonomous run)
+
+Job succeeded. 0 questions returned for `fall-futureeval-2026` (all open ones already
+forecast), so 0 forecasts attempted, 0 published; RUN_STATUS models attempted 0, timed out 0,
+dropped 0; no model-slot errors.
+
+### Market anchor (live from commit be081a8)
+Backtest data: ForecastBench (forecastbench.org), CC BY-SA 4.0
+
+Two runs on the same 60 resolved questions (20 Polymarket, 20 Manifold, 20 Metaculus; pinned
+with `--fb-ids`): run 38324248999 (no research) and run
+[38393603023](https://github.com/OlsOls4/ollymcbride-bot/actions/runs/38393603023)
+(`--market-context`: each model's only research is the question's own market/crowd price at
+freeze, as the live market research gives it; members kimi-k3, gemini-3.5/3.1-flash-lite, Groq
+gpt-oss-120b on 20; 36 min, zero cost, no Flash, no OpenRouter). Chains simulated with the
+current live chains. Paired bootstrap 95% CI on Brier (10,000 resamples); dB < 0 is better.
+
+| Variant (n=60) | Brier | dB vs live chain, no research |
+|---|---|---|
+| Live chain median, no research | 0.224 | — |
+| Market price alone | 0.154 | -0.071 [-0.150, +0.001] |
+| Chain median, market in prompt | 0.199 | -0.025 [-0.091, +0.035] |
+| Blend w=0.3, no-research model | 0.182 | -0.043 [-0.075, -0.015] |
+| Blend w=0.5, no-research model | 0.163 | -0.061 [-0.110, -0.018] |
+| Blend w=0.7, no-research model | 0.153 | -0.071 [-0.135, -0.015] |
+| Blend w=0.3, market-in-prompt model | 0.175 | -0.049 [-0.115, +0.012] |
+| Blend w=0.5, market-in-prompt model | 0.164 | -0.060 [-0.130, +0.004] |
+| Blend w=0.7, market-in-prompt model | 0.157 | -0.068 [-0.142, +0.001] |
+
+The live bot already sees the market in its research, so the closest reference is the
+market-in-prompt chain. Against it the blend wins beyond noise at every weight: w=0.3 -0.024
+[-0.051, -0.003], w=0.5 -0.035 [-0.075, -0.003], w=0.7 -0.042 [-0.092, -0.002] (log score
++0.128 [+0.008, +0.294] at 0.7). On Polymarket+Manifold only (the venues the live bot reads,
+n=40): w=0.7 -0.065 [-0.134, -0.006]. Leave-one-out choice of w on the no-research run also
+picks 0.7 (-0.069 [-0.127, -0.017]).
+
+By venue (n=20 each, so wide CIs): the gain is mostly Manifold (blend 0.7 on the no-research
+model -0.202 [-0.344, -0.079]); Polymarket shows none (+0.010 [-0.051, +0.075]; the Polymarket
+price alone was worse than the chain here); Metaculus community prediction -0.021 [-0.103,
++0.038] (the live bot does not see Metaculus CP). Model-alone note: with the market in the
+prompt, kimi-k3 scored 0.160 and the chain mean 0.179 vs the chain median 0.199 (dB -0.020
+[-0.042, -0.002]); not acted on.
+
+Live change (`metaculus_bot/market_anchor.py`, wired in `research/prediction_market.py` and
+`forecaster.py`, tests `tests/test_market_anchor.py`):
+- When the prediction-market research finds a market the ranker graded
+  `same_quantity_same_date` that is open, unresolved, a plain binary price (no children, no
+  scalar, no withheld price, not staleness-capped), liquid (Polymarket/Kalshi volume or open
+  interest >= $10k; Manifold >= 20 bettors and non-zero volume; PredictIt never) and with a
+  spread <= 10 points when bid/ask are known, the binary aggregate becomes
+  `0.7 * market + 0.3 * ensemble`, clamped to 2-98%. Several qualifying markets are averaged
+  if they agree within 15 points; otherwise no anchor.
+- No qualifying market, a non-binary question, `is_benchmarking`, or FREE_MODE off: unchanged.
+  `MARKET_ANCHOR_ENABLED=false` turns it off. Selection errors fail soft (no anchor).
+- The comment gets a line under its header naming the venue, its price and link, the weight,
+  the ensemble value before blending and the published value. Log marker `MARKET_ANCHOR:`.
+- Caveats: n=60 and the CI upper bounds sit just below 0; the gain comes mostly from Manifold
+  questions. Watch resolved MiniBench scores for anchored vs unanchored questions.
+
+Also fixed: training-cutoff entries for the swapped-in chain links (glm-5.3-flash,
+nemotron-3-super/ultra, Cloudflare gpt-oss-120b, Groq gpt-oss-20b), which
+`test_live_chain_members_all_have_cutoffs` needed.
