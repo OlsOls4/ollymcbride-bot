@@ -490,6 +490,7 @@ def test_no_live_chain_carries_a_dead_or_hopeless_link() -> None:
     assert not any("inkling" in m for m in every)
     assert not any(m.startswith("mistral/") for m in every)  # free key: 0 RPM on medium/small
     assert "groq/qwen/qwen3.8-27b" not in every  # 1K output-tokens/min on Groq Free
+    assert "nvidia_nim/moonshotai/kimi-k2.6" not in every  # NIM 404 (health run 2026-10-13)
 
 
 def test_floors_try_3_5_flash_lite_before_3_1() -> None:
