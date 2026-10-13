@@ -21,6 +21,7 @@ from forecasting_tools.data_models.forecast_report import ForecastReport, Resear
 from forecasting_tools.data_models.questions import ConditionalQuestion, DateQuestion
 from forecasting_tools.helpers.metaculus_client import MetaculusClient
 
+from metaculus_bot import market_anchor
 from metaculus_bot.aggregation_pipeline import AggregationPipeline
 from metaculus_bot.aggregation_strategies import (
     AggregationStrategy,
@@ -273,6 +274,7 @@ class TemplateForecaster(CompactLoggingForecastBot):
         self._time_budget_fast_path_count: int = 0
         # qid -> FORECASTERS_USED contributor count; a stacked publish collapses predictions to one, so count it here.
         self._contributing_forecasters: defaultdict[int, int] = defaultdict(int)
+        self._market_anchor_notes: dict[int, str] = {}
 
     @property
     def aggregation_strategy(self) -> AggregationStrategy:
@@ -802,6 +804,9 @@ class TemplateForecaster(CompactLoggingForecastBot):
             time_spent_in_minutes,
         )
         qid = question.id_of_question
+        anchor_note = self._market_anchor_notes.pop(qid, None) if qid is not None else None
+        if anchor_note:
+            base_text = market_anchor.insert_anchor_note(base_text, anchor_note)
         stacker_outcome = self._pipeline.outcomes.pop(qid, None) if qid is not None else None
         stacker_skip_reason = self._pipeline.skip_reasons.pop(qid, None) if qid is not None else None
         # Fan-out count, not the collections' (a stacked publish holds one); docs/architecture.md "Ensemble-size disclosure".
@@ -949,7 +954,42 @@ class TemplateForecaster(CompactLoggingForecastBot):
                 )
             )
             return floored.distribution
-        return aggregated
+        return self._apply_market_anchor(aggregated, question)
+
+    def _apply_market_anchor(self, aggregated: PredictionTypes, question: MetaculusQuestion) -> PredictionTypes:
+        """FREE_MODE: blend a binary aggregate toward the liquid same-question market price, if any.
+
+        The anchor is recorded by the prediction-market research provider (metaculus_bot/market_anchor.py)
+        and popped here once. No anchor, or a non-binary question: the aggregate is returned unchanged.
+        """
+        if not market_anchor.market_anchor_enabled():
+            return aggregated
+        qid = getattr(question, "id_of_question", None)
+        anchor = market_anchor.pop_anchor(qid)
+        if anchor is None:
+            return aggregated
+        if (
+            not isinstance(question, BinaryQuestion)
+            or isinstance(aggregated, bool)
+            or not isinstance(aggregated, float)
+        ):
+            return aggregated
+        weight = market_anchor.MARKET_ANCHOR_WEIGHT
+        published = market_anchor.blend_toward_market(aggregated, anchor.prob, weight)
+        logger.info(
+            "MARKET_ANCHOR: question=%s platform=%s market=%.4f model=%.4f weight=%.2f published=%.4f",
+            qid,
+            anchor.platform,
+            anchor.prob,
+            aggregated,
+            weight,
+            published,
+        )
+        if qid is not None:
+            self._market_anchor_notes[qid] = market_anchor.format_anchor_note(
+                anchor, model_p=aggregated, published_p=published, weight=weight
+            )
+        return published  # type: ignore[return-value]  # binary branch: PredictionTypes is float here
 
     def _pull_research_chart(self, qid: int | None) -> str | None:
         """Pop the time-series-anchor chart image for this qid from the provider's
