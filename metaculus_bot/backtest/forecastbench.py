@@ -4,11 +4,27 @@ Data: ForecastBench datasets, https://github.com/forecastingresearch/forecastben
 (Forecasting Research Institute; Karger et al., ICLR 2025), licensed CC BY-SA 4.0. The raw JSON
 is fetched keylessly from raw.githubusercontent.com at run time; nothing from it is committed.
 
-Only MARKET-source binary questions are used (Metaculus, Manifold, Polymarket, INFER/RFI), and only
-ones that actually resolved (``resolved`` true, ``resolved_to`` exactly 0 or 1) on or after a floor
-date, so free models cannot already know the outcome. Each question set ``<due>-llm.json`` is
-joined to its own resolution set ``<due>_resolution_set.json`` on ForecastBench's question id, and
-each resolved row is keyed by (question id, resolution date).
+Two kinds of binary question, chosen with ``kind``:
+
+* ``market``: MARKET-source questions (Metaculus, Manifold, Polymarket, INFER/RFI).
+* ``dataset``: DATASET-source questions (ACLED, DBnomics, FRED, Wikipedia, yfinance, and any other
+  non-market source ForecastBench adds). These carry several ``resolution_dates``; exactly one is
+  used per question, deterministically the FIRST that is on or after the floor date and after the
+  due date (:func:`pick_resolution_date`). If that date has not resolved yet the question is
+  skipped (no fall-through to a later date, which would bias toward whatever resolves first).
+  The ``{forecast_due_date}`` / ``{resolution_date}`` placeholders are filled in, and the
+  question's own freeze value (``freeze_datetime_value`` + explanation) is what the model sees
+  as research, as ForecastBench supplies it (:func:`freeze_context_text`).
+
+Only questions that actually resolved (``resolved`` true, ``resolved_to`` exactly 0 or 1) on or
+after a floor date are used, so free models cannot already know the outcome. Each question set
+``<due>-llm.json`` is joined to its own resolution set ``<due>_resolution_set.json`` on
+ForecastBench's question id, and each resolved row is keyed by (question id, resolution date).
+
+Cheap non-LLM baselines for dataset questions (no model calls): the source's base rate and the
+same series' base rate from resolutions already known on the due date (:func:`prior_rate`), and a
+naive status-quo / persistence forecast from the question text and freeze value
+(:func:`persistence_probability`).
 
 Pure stdlib (no bot imports): unit-tested offline in ``tests/test_forecastbench_backtest.py``.
 """
@@ -134,6 +150,8 @@ class FBQuestion:
     market_value: float | None = None  # freeze_datetime_value (market / crowd probability at freeze)
     market_value_explanation: str = ""
     freeze_date: date | None = None
+    kind: str = "market"  # "market" | "dataset"
+    freeze_value: str = ""  # raw freeze_datetime_value (dataset questions: a number or a label)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -252,16 +270,225 @@ def join_market_binary(
     return out
 
 
+# ---------------------------------------------------------------------------------------------
+# Dataset-source questions (ACLED, DBnomics, FRED, Wikipedia, yfinance, ...)
+# ---------------------------------------------------------------------------------------------
+
+KNOWN_DATASET_SOURCES: frozenset[str] = frozenset({"acled", "dbnomics", "fred", "wikipedia", "yfinance"})
+
+
+def is_dataset_source(source: Any) -> bool:
+    """Any non-market ForecastBench source (new dataset sources are picked up automatically)."""
+    return bool(source) and str(source) not in MARKET_SOURCES
+
+
+def fill_question_dates(text: str, *, due: date, resolution: date) -> str:
+    return text.replace("{forecast_due_date}", due.isoformat()).replace("{resolution_date}", resolution.isoformat())
+
+
+def pick_resolution_date(dates: Iterable[Any], *, due: date, floor: date) -> date | None:
+    """The first listed resolution date on/after ``floor`` and strictly after ``due`` (deterministic)."""
+    parsed = sorted(d for d in (parse_fb_date(x) for x in dates or ()) if d is not None)
+    return next((d for d in parsed if d >= floor and d > due), None)
+
+
+def _binary_outcome(row: dict[str, Any]) -> bool | None:
+    if row.get("resolved") is not True:
+        return None
+    rt = row.get("resolved_to")
+    if isinstance(rt, bool) or rt not in (0, 1, 0.0, 1.0):
+        return None
+    return float(rt) == 1.0
+
+
+def join_dataset_binary(
+    question_set: dict[str, Any], resolution_set: dict[str, Any], *, resolved_after: date
+) -> list[FBQuestion]:
+    """Resolved dataset-source questions of one due date, one resolution date each (see module doc)."""
+    due = parse_fb_date(question_set.get("forecast_due_date"))
+    if due is None:
+        return []
+    res: dict[tuple[str, date], bool] = {}
+    for r in resolution_set.get("resolutions", []):
+        if not is_dataset_source(r.get("source")) or not isinstance(r.get("id"), str):
+            continue
+        rdate = parse_fb_date(r.get("resolution_date"))
+        o = _binary_outcome(r)
+        if rdate is not None and o is not None:
+            res[(str(r["id"]), rdate)] = o
+    out: list[FBQuestion] = []
+    seen: set[str] = set()
+    for q in question_set.get("questions", []):
+        if not is_dataset_source(q.get("source")) or not isinstance(q.get("id"), str):
+            continue  # combination questions carry a list id
+        fb_id = str(q["id"])
+        if fb_id in seen:
+            continue
+        rdate = pick_resolution_date(q.get("resolution_dates") or (), due=due, floor=resolved_after)
+        if rdate is None or (fb_id, rdate) not in res:
+            continue
+        seen.add(fb_id)
+        out.append(
+            FBQuestion(
+                fb_id=fb_id,
+                source=str(q.get("source")),
+                due_date=due,
+                resolution_date=rdate,
+                outcome=res[(fb_id, rdate)],
+                question=fill_question_dates(_text(q.get("question")), due=due, resolution=rdate),
+                background=_text(q.get("background")),
+                resolution_criteria=fill_question_dates(_text(q.get("resolution_criteria")), due=due, resolution=rdate),
+                source_intro=_text(q.get("source_intro")),
+                url=str(q.get("url") or ""),
+                market_value=None,  # a dataset freeze value is a level, never a probability
+                market_value_explanation="",
+                freeze_date=parse_fb_date(q.get("freeze_datetime")),
+                kind="dataset",
+                freeze_value=_text(q.get("freeze_datetime_value")),
+                extra={"freeze_value_explanation": _text(q.get("freeze_datetime_value_explanation"))},
+            )
+        )
+    return out
+
+
+@dataclass(frozen=True)
+class FBResolved:
+    """One resolved dataset-source row (any due date): the history behind the prior-rate baselines."""
+
+    fb_id: str
+    source: str
+    due_date: date
+    resolution_date: date
+    outcome: bool
+
+
+def resolved_dataset_rows(resolution_set: dict[str, Any]) -> list[FBResolved]:
+    due = parse_fb_date(resolution_set.get("forecast_due_date"))
+    if due is None:
+        return []
+    out: list[FBResolved] = []
+    for r in resolution_set.get("resolutions", []):
+        if not is_dataset_source(r.get("source")) or not isinstance(r.get("id"), str):
+            continue
+        rdate, o = parse_fb_date(r.get("resolution_date")), _binary_outcome(r)
+        if rdate is not None and o is not None:
+            out.append(FBResolved(str(r["id"]), str(r["source"]), due, rdate, o))
+    return out
+
+
+def freeze_context_text(item: FBQuestion) -> str | None:
+    """Research text carrying ONLY the question's own freeze value, as ForecastBench supplies it."""
+    if item.kind != "dataset" or not item.freeze_value:
+        return None
+    when = (item.freeze_date or item.due_date).isoformat()
+    expl = item.extra.get("freeze_value_explanation") or "Latest value of the series."
+    return (
+        "## Data snapshot\n"
+        f"The question's own reference value, as of {when}:\n"
+        f"- {expl} Value: {item.freeze_value}\n\n"
+        "No other research report is available. Forecast from the question text, the resolution "
+        "criteria, this value and your own background knowledge, anchored on base rates."
+    )
+
+
+def prior_rate(
+    history: Iterable[FBResolved], *, before: date, source: str | None = None, fb_id: str | None = None
+) -> float | None:
+    """Laplace-smoothed YES rate, (k + 1) / (n + 2), over rows resolved strictly before ``before``
+    (so known on the forecast due date), optionally restricted to one source and/or one series id.
+    None when no such row exists."""
+    k = n = 0
+    for h in history:
+        if h.resolution_date >= before:
+            continue
+        if source is not None and h.source != source:
+            continue
+        if fb_id is not None and h.fb_id != fb_id:
+            continue
+        n += 1
+        k += int(h.outcome)
+    return None if n == 0 else (k + 1) / (n + 2)
+
+
+PERSISTENCE_YES: float = 0.9  # fixed, not tuned: "nothing changes" resolves YES
+PERSISTENCE_NO: float = 0.1  # fixed, not tuned: "nothing changes" resolves NO
+_ACLED_TENX = re.compile(r"more than ten times as many", re.I)
+
+
+def _num(value: str) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def poisson_sf(threshold: float, lam: float) -> float:
+    """P(N > threshold) for N ~ Poisson(lam), N an integer count."""
+    if lam <= 0:
+        return 0.0 if threshold >= 0 else 1.0
+    k_max = math.floor(threshold)
+    if k_max < 0:
+        return 1.0
+    term = math.exp(-lam)
+    cdf = term
+    for k in range(1, k_max + 1):
+        term *= lam / k
+        cdf += term
+    return max(0.0, min(1.0, 1.0 - cdf))
+
+
+def status_quo_direction(item: FBQuestion) -> int:
+    """+1 when an unchanged world resolves the question YES, -1 when NO, 0 when it says nothing
+    (a continuous level that will almost surely move, e.g. a stock close)."""
+    q = item.question.lower()
+    if item.source == "wikipedia":
+        if "as high or higher" in q or "still hold" in q:
+            return 1
+        if "at least 1% higher" in q:
+            return -1
+        if "vaccine have been developed" in q:
+            return -1 if item.freeze_value.strip().lower() in ("no", "0", "false") else 1
+    return 0
+
+
+def persistence_probability(item: FBQuestion) -> float:
+    """Naive persistence / status-quo forecast from the question text and freeze value only.
+
+    ACLED: the 30-day count is Poisson with the freeze value's rate held constant (``ten times
+    ... one plus`` questions: rate = freeze - 1, threshold = 10 * freeze). Other sources: 0.9 / 0.1
+    when an unchanged value resolves YES / NO (:func:`status_quo_direction`), else 0.5 (a level
+    that moves either way: price, yield, temperature).
+    """
+    if item.source == "acled":
+        v = _num(item.freeze_value)
+        if v is not None and v >= 0:
+            if _ACLED_TENX.search(item.question):
+                return min(0.99, max(0.01, poisson_sf(10.0 * v, max(0.0, v - 1.0))))
+            return min(0.99, max(0.01, poisson_sf(v, v)))
+        return 0.5
+    d = status_quo_direction(item)
+    return PERSISTENCE_YES if d > 0 else PERSISTENCE_NO if d < 0 else 0.5
+
+
 def load_forecastbench(
     *,
     since: date,
     until: date,
     resolved_after: date,
     fetch: Callable[[str], Any | None] = fetch_json,
+    kind: str = "market",
+    history: list[FBResolved] | None = None,
 ) -> tuple[list[FBQuestion], dict[str, Any]]:
-    """Fetch every question set + resolution set pair with due date in [since, until] and join them."""
+    """Fetch every question set + resolution set pair with due date in [since, until] and join them.
+
+    ``kind``: "market" or "dataset". With ``history`` (a list), every resolved dataset row of every
+    fetched resolution set is appended to it (the prior-rate baselines' input).
+    """
+    if kind not in ("market", "dataset"):
+        raise ValueError(f"kind must be 'market' or 'dataset', got {kind!r}")
     items: list[FBQuestion] = []
-    diag: dict[str, Any] = {"due_dates": {}}
+    diag: dict[str, Any] = {"due_dates": {}, "kind": kind}
     for due in candidate_due_dates(since, until):
         d = due.isoformat()
         qset = fetch(f"{FB_RAW_BASE}/question_sets/{d}-llm.json")
@@ -269,7 +496,12 @@ def load_forecastbench(
         if qset is None or rset is None:
             diag["due_dates"][d] = "missing"
             continue
-        joined = join_market_binary(qset, rset, resolved_after=resolved_after)
+        if kind == "dataset":
+            joined = join_dataset_binary(qset, rset, resolved_after=resolved_after)
+            if history is not None:
+                history.extend(resolved_dataset_rows(rset))
+        else:
+            joined = join_market_binary(qset, rset, resolved_after=resolved_after)
         diag["due_dates"][d] = len(joined)
         items.extend(joined)
     return items, diag
@@ -410,7 +642,29 @@ def _mean(xs: Sequence[float]) -> float:
     return sum(xs) / len(xs)
 
 
-AGGREGATORS: dict[str, Callable[[Sequence[float]], float]] = {"median": _median, "mean": _mean}
+def trimmed_mean(xs: Sequence[float]) -> float:
+    """Mean after dropping the single lowest and highest value (plain mean below 3 values)."""
+    s = sorted(xs)
+    return _mean(s[1:-1]) if len(s) >= 3 else _mean(s)
+
+
+def shrink(p: float, target: float, weight: float) -> float:
+    """``(1 - weight) * p + weight * target``."""
+    return (1.0 - weight) * float(p) + weight * float(target)
+
+
+def extremize(p: float, alpha: float) -> float:
+    """Log-odds scaled by ``alpha`` (> 1 extremizes, < 1 de-extremizes); p clipped to [0.001, 0.999]."""
+    q = min(1.0 - LOG_CLIP, max(LOG_CLIP, float(p)))
+    z = alpha * math.log(q / (1.0 - q))
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+AGGREGATORS: dict[str, Callable[[Sequence[float]], float]] = {
+    "median": _median,
+    "mean": _mean,
+    "trimmed_mean": trimmed_mean,
+}
 
 
 def simulate_chains(
