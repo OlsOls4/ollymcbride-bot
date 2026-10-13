@@ -1,9 +1,10 @@
 """FREE_MODE market anchor: blend a binary forecast toward a liquid same-question market price.
 
-Evidence (ForecastBench backtest, run 38324248999 plus the market-context rerun; numbers in
-docs/free-mode.md "Market anchor"): on resolved market-source questions the market price at
-freeze beat the free-model chain median clearly, and the post-hoc blend
-``p = w * market + (1 - w) * model`` beat the chain beyond its paired bootstrap CI.
+Evidence (ForecastBench backtests on the same 60 resolved questions: run 38324248999, no
+research, and run 38393603023, the question's market price in the prompt; numbers in
+docs/free-mode.md "Market anchor"): the post-hoc blend ``p = w * market + (1 - w) * model``
+beat the chain median beyond its paired bootstrap CI in both runs, and w = 0.7 was best of
+{0.3, 0.5, 0.7} in both (market in prompt: dBrier -0.042 [-0.092, -0.002], n=60).
 
 Design (all deterministic, no human in the loop):
 
@@ -40,7 +41,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 MARKET_ANCHOR_ENABLED_ENV: str = "MARKET_ANCHOR_ENABLED"
 # Weight on the market price. Chosen from {0.3, 0.5, 0.7} on resolved ForecastBench questions
-# (docs/free-mode.md "Market anchor"); 0.7 was best overall and under leave-one-out selection.
+# (docs/free-mode.md "Market anchor"): 0.7 was best in both runs and under leave-one-out selection.
 MARKET_ANCHOR_WEIGHT: float = 0.7
 MARKET_ANCHOR_WEIGHT_GRID: tuple[float, ...] = (0.3, 0.5, 0.7)
 ANCHOR_TIER: str = "same_quantity_same_date"
