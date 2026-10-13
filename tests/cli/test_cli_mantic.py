@@ -154,8 +154,13 @@ class TestOnlyPostsFilter:
     }
 
     def test_every_tournament_shaped_mode_is_covered(self) -> None:
-        """Derived from RunMode, so a new tournament-shaped mode fails here until it is listed."""
-        assert set(self.TOURNAMENT_SLUGS) == set(get_args(RunMode)) - {"test_questions"}
+        """Derived from RunMode, so a new tournament-shaped mode fails here until it is listed.
+
+        ``market_pulse`` is excluded: it never goes through ``forecast_on_tournament`` (it selects
+        due questions itself, re-forecasting on an age clock), and its own ``--only-posts`` and
+        selection behaviour are pinned in tests/test_market_pulse.py.
+        """
+        assert set(self.TOURNAMENT_SLUGS) == set(get_args(RunMode)) - {"test_questions", "market_pulse"}
 
     @pytest.mark.parametrize("run_mode", sorted(TOURNAMENT_SLUGS))
     def test_only_the_requested_posts_reach_forecast_questions(
