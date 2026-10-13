@@ -24,6 +24,11 @@ TOURNAMENT_ID: str = "fall-futureeval-2026"  # Fall 2026 FutureEval Bot Tourname
 TOURNAMENT_END_DATE: str = "2027-01-06"  # forecasting_end_date on project 33121 (API-verified 2026-09-06)
 TOURNAMENT_HARD_STOP_WEEKS: int = 2  # ~2 weeks of wiggle room past close before erroring
 
+# Market Pulse Challenge 26Q4 (spot-scored numeric groups; bots must keep updating). See docs/market-pulse.md.
+MARKET_PULSE_TOURNAMENT_ID: int = 33131
+MARKET_PULSE_TOURNAMENT_SLUG: str = "market-pulse-26q4"
+MARKET_PULSE_END_DATE: str = "2026-12-31"  # runs 7 Oct - 31 Dec 2026; 21 Dec is the last day for prize participation
+
 # The undated `metaculus-cup` slug now answers HTTP 400. Receipt: docs/constants.md "METACULUS_CUP_ID".
 METACULUS_CUP_ID: str = "metaculus-cup-fall-2026"
 
