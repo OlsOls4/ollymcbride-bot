@@ -663,7 +663,10 @@ def _budgeted(chain: Any, cap: int) -> Any:
 def _fb_binary_question(item: Any, qid: int) -> Any:
     due = item.due_date
     open_d = item.open_date if item.open_date and item.open_date <= due else due - timedelta(days=30)
-    close_d = item.close_date if item.close_date and item.close_date > due else due + timedelta(days=30)
+    if item.kind == "dataset":
+        close_d = item.resolution_date  # the one resolution date this backtest scores
+    else:
+        close_d = item.close_date if item.close_date and item.close_date > due else due + timedelta(days=30)
     background = "\n\n".join(x for x in (item.source_intro, item.background) if x)
     return BinaryQuestion(
         question_text=item.question,
@@ -739,13 +742,19 @@ def _fmt_ci(v: float | None, lo: float | None, hi: float | None, *, nd: int = 3,
 
 
 def render_fb_report(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
-    lines = [
-        "## FREE_MODE backtest on ForecastBench (market-source binary questions, "
+    head = (
+        "## FREE_MODE backtest on ForecastBench (dataset-source binary questions, research = the "
+        "question's own freeze value only)"
+        if meta.get("kind") == "dataset"
+        else "## FREE_MODE backtest on ForecastBench (market-source binary questions, "
         + (
             "research = the question's own market price at freeze only)"
             if meta.get("market_context")
             else "no research)"
-        ),
+        )
+    )
+    lines = [
+        head,
         "",
         f"Sample: {meta['n_questions']} questions {meta['source_counts']} (seed {meta['seed']}), resolved "
         f"{meta['pool_after']} or later (pool {meta['pool_size']}), outcomes {meta['outcomes']}. "
@@ -799,13 +808,24 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
 
     floor = date.fromisoformat(args.resolved_after)
     pool_after = max(floor, date.fromisoformat(args.fb_pool_after))
+    kind = args.fb_kind
+    history: list[fb.FBResolved] = []
     items, diag = fb.load_forecastbench(
-        since=date.fromisoformat(args.fb_since), until=datetime.now(UTC).date(), resolved_after=floor
+        since=date.fromisoformat(args.fb_since),
+        until=datetime.now(UTC).date(),
+        resolved_after=floor,
+        kind=kind,
+        history=history,
     )
     if args.fb_ids:
         # Pinned sample (an earlier run's exact questions and due dates): no dedupe, no sampling.
         pool = fb.select_by_ids(items, args.fb_ids)
         sample = pool[: args.num_questions]
+    elif kind == "dataset":
+        # Dataset ids recur in every question set; filter to the pool BEFORE the per-id pick so
+        # the pick is among eligible instances (the market order below is kept for reproducibility).
+        pool = fb.dedupe_by_question([it for it in items if it.resolution_date >= pool_after], seed=args.seed)
+        sample = fb.stratified_sample(pool, args.num_questions, seed=args.seed)
     else:
         items = fb.dedupe_by_question(items, seed=args.seed)
         pool = [it for it in items if it.resolution_date >= pool_after]
@@ -814,7 +834,10 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
         raise SystemExit(
             f"Only {len(sample)} ForecastBench questions after filtering; widen --fb-since/--fb-pool-after"
         )
-    _write_json("backtests/forecastbench_fetch.json", {**diag, "joined": len(items), "pool": len(pool)})
+    _write_json(
+        "backtests/forecastbench_fetch.json",
+        {**diag, "joined": len(items), "pool": len(pool), "history_rows": len(history)},
+    )
 
     qid_of = {it.fb_id: 9_000_000 + k for k, it in enumerate(sample)}
     item_of = {qid_of[it.fb_id]: it for it in sample}
@@ -822,6 +845,11 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
     _install_today_dates({qid: fb.as_datetime(it.due_date) for qid, it in item_of.items()})
     apply_scoring_patches()
     research_cache = dict.fromkeys(questions, NO_RESEARCH_TEXT)
+    for qid, it in item_of.items():
+        # Dataset questions: the question's own freeze value, as ForecastBench gives it to models.
+        ctx = fb.freeze_context_text(it)
+        if ctx:
+            research_cache[qid] = ctx
     if args.market_context:
         # Variant: the question's own market/crowd price at freeze, as the live market research gives.
         for qid, it in item_of.items():
@@ -883,7 +911,11 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
         return fb.BinaryVariant(name, preds)
 
     chain_med = chain_variant("live_chain_median", "median")
-    variants += [chain_med, chain_variant("live_chain_mean", "mean")]
+    variants += [
+        chain_med,
+        chain_variant("live_chain_mean", "mean"),
+        chain_variant("live_chain_trimmed_mean", "trimmed_mean"),
+    ]
     # Weakest member among those that actually served a slot, by its own mean Brier.
     served: set[str] = set()
     for chain in live_chains:
@@ -912,7 +944,7 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
                 preds[it.fb_id] = fb.AGGREGATORS[agg](ps)
         variants.append(fb.BinaryVariant(f"all_members_{agg}(>=3)", preds))
     market_of = {it.fb_id: it.market_value for it in sample if it.market_value is not None}
-    for w in MARKET_ANCHOR_WEIGHT_GRID:
+    for w in MARKET_ANCHOR_WEIGHT_GRID if market_of else ():
         variants.append(
             fb.BinaryVariant(
                 f"blend:{w:.1f}*market+{1 - w:.1f}*chain_median",
@@ -920,20 +952,38 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
             )
         )
     base_rate = statistics.fmean(1.0 if o else 0.0 for o in outcomes.values())
+    if kind == "dataset":
+        # Cheap non-LLM baselines (no model calls), all from data known on the due date.
+        def _src_rate(it: Any) -> float:
+            r = fb.prior_rate(history, before=it.due_date, source=it.source)
+            return 0.5 if r is None else r
+
+        def _id_rate(it: Any) -> float:
+            r = fb.prior_rate(history, before=it.due_date, fb_id=it.fb_id)
+            return _src_rate(it) if r is None else r
+
+        variants += [
+            fb.BinaryVariant("baseline:source_rate(prior)", {it.fb_id: _src_rate(it) for it in sample}),
+            fb.BinaryVariant("baseline:series_rate(prior)", {it.fb_id: _id_rate(it) for it in sample}),
+            fb.BinaryVariant(
+                "baseline:persistence(text+freeze)", {it.fb_id: fb.persistence_probability(it) for it in sample}
+            ),
+        ]
     variants += [
         fb.BinaryVariant(f"baseline:base_rate({base_rate:.3f}, in-sample)", dict.fromkeys(outcomes, base_rate)),
         fb.BinaryVariant("baseline:always_0.5", dict.fromkeys(outcomes, 0.5)),
-        fb.BinaryVariant(
-            "market/crowd at freeze (ForecastBench freeze_datetime_value)",
-            {it.fb_id: it.market_value for it in sample if it.market_value is not None},
-        ),
     ]
+    if market_of:
+        variants.append(
+            fb.BinaryVariant("market/crowd at freeze (ForecastBench freeze_datetime_value)", dict(market_of))
+        )
     rows = fb.summarize_variants(variants, outcomes, reference="live_chain_median", seed=args.seed)
 
     src_counts: dict[str, int] = {}
     for it in sample:
         src_counts[it.source] = src_counts.get(it.source, 0) + 1
     meta = {
+        "kind": kind,
         "n_questions": len(sample),
         "source_counts": src_counts,
         "seed": args.seed,
@@ -969,6 +1019,16 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
             "resolution_date": it.resolution_date.isoformat(),
             "outcome": int(it.outcome),
             "market": it.market_value,
+            "kind": it.kind,
+            "question": it.question if it.kind == "dataset" else None,
+            "freeze_value": it.freeze_value or None,
+            "persistence": fb.persistence_probability(it) if it.kind == "dataset" else None,
+            "source_rate_prior": fb.prior_rate(history, before=it.due_date, source=it.source)
+            if it.kind == "dataset"
+            else None,
+            "series_rate_prior": fb.prior_rate(history, before=it.due_date, fb_id=it.fb_id)
+            if it.kind == "dataset"
+            else None,
             **{short_name(m): forecasts.get(m, {}).get(it.fb_id) for m in members},
             "live_chain_median": chain_med.preds.get(it.fb_id),
         }
@@ -1013,7 +1073,7 @@ def _fb_notices(out: dict[str, Any], per: int = 7) -> list[tuple[str, str]]:
     chunks = [rows[i : i + per] for i in range(0, len(rows), per)]
     notes = [(f"FB rows {i + 1}/{len(chunks)}", "\n".join(ch)) for i, ch in enumerate(chunks)]
     m = out["meta"]
-    keep = ("n_questions", "source_counts", "pool_after", "pool_size", "outcomes", "coverage", "weakest")
+    keep = ("kind", "n_questions", "source_counts", "pool_after", "pool_size", "outcomes", "coverage", "weakest")
     notes.append(("FB meta", json.dumps({k: m.get(k) for k in keep}, default=str)))
     notes.append(
         (
@@ -1068,6 +1128,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--member-timeout-min", type=int, default=240)
     p.add_argument("--member-batch", type=int, default=3, help="ForecastBench: questions per member in flight")
     p.add_argument("--seed", type=int, default=20261012)
+    p.add_argument(
+        "--fb-kind",
+        choices=("market", "dataset"),
+        default="market",
+        help="ForecastBench: market-source questions or dataset-source questions (acled, fred, ...)",
+    )
     p.add_argument(
         "--market-context",
         action="store_true",
