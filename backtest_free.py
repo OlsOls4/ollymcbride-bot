@@ -130,6 +130,7 @@ from metaculus_bot.benchmark.bot_factory import (  # noqa: E402
 from metaculus_bot.benchmark.logging_setup import configure_benchmark_logging  # noqa: E402
 from metaculus_bot.constants import FREE_MODE_FORECASTER_LINK_TIMEOUT_S, FREE_MODE_FORECASTER_MAX_TOKENS  # noqa: E402
 from metaculus_bot.free_mode import build_free_chain  # noqa: E402
+from metaculus_bot.market_anchor import MARKET_ANCHOR_WEIGHT_GRID, blend_toward_market  # noqa: E402
 from metaculus_bot.scoring_common import binary_log_score, brier_score  # noqa: E402
 from metaculus_bot.scoring_patches import apply_scoring_patches  # noqa: E402
 
@@ -739,7 +740,12 @@ def _fmt_ci(v: float | None, lo: float | None, hi: float | None, *, nd: int = 3,
 
 def render_fb_report(rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
     lines = [
-        "## FREE_MODE backtest on ForecastBench (market-source binary questions, no research)",
+        "## FREE_MODE backtest on ForecastBench (market-source binary questions, "
+        + (
+            "research = the question's own market price at freeze only)"
+            if meta.get("market_context")
+            else "no research)"
+        ),
         "",
         f"Sample: {meta['n_questions']} questions {meta['source_counts']} (seed {meta['seed']}), resolved "
         f"{meta['pool_after']} or later (pool {meta['pool_size']}), outcomes {meta['outcomes']}. "
@@ -796,9 +802,14 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
     items, diag = fb.load_forecastbench(
         since=date.fromisoformat(args.fb_since), until=datetime.now(UTC).date(), resolved_after=floor
     )
-    items = fb.dedupe_by_question(items, seed=args.seed)
-    pool = [it for it in items if it.resolution_date >= pool_after]
-    sample = fb.stratified_sample(pool, args.num_questions, seed=args.seed)
+    if args.fb_ids:
+        # Pinned sample (an earlier run's exact questions and due dates): no dedupe, no sampling.
+        pool = fb.select_by_ids(items, args.fb_ids)
+        sample = pool[: args.num_questions]
+    else:
+        items = fb.dedupe_by_question(items, seed=args.seed)
+        pool = [it for it in items if it.resolution_date >= pool_after]
+        sample = fb.stratified_sample(pool, args.num_questions, seed=args.seed)
     if len(sample) < 10:
         raise SystemExit(
             f"Only {len(sample)} ForecastBench questions after filtering; widen --fb-since/--fb-pool-after"
@@ -811,6 +822,10 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
     _install_today_dates({qid: fb.as_datetime(it.due_date) for qid, it in item_of.items()})
     apply_scoring_patches()
     research_cache = dict.fromkeys(questions, NO_RESEARCH_TEXT)
+    if args.market_context:
+        # Variant: the question's own market/crowd price at freeze, as the live market research gives.
+        for qid, it in item_of.items():
+            research_cache[qid] = fb.market_context_text(it) or NO_RESEARCH_TEXT
 
     # Quota guards for the shared free tiers.
     free_mode_module.FREE_MODE_GROQ_MAX_TOKENS = FB_GROQ_MAX_TOKENS
@@ -896,6 +911,14 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
             if len(ps) >= 3:
                 preds[it.fb_id] = fb.AGGREGATORS[agg](ps)
         variants.append(fb.BinaryVariant(f"all_members_{agg}(>=3)", preds))
+    market_of = {it.fb_id: it.market_value for it in sample if it.market_value is not None}
+    for w in MARKET_ANCHOR_WEIGHT_GRID:
+        variants.append(
+            fb.BinaryVariant(
+                f"blend:{w:.1f}*market+{1 - w:.1f}*chain_median",
+                {q: blend_toward_market(p, market_of[q], w) for q, p in chain_med.preds.items() if q in market_of},
+            )
+        )
     base_rate = statistics.fmean(1.0 if o else 0.0 for o in outcomes.values())
     variants += [
         fb.BinaryVariant(f"baseline:base_rate({base_rate:.3f}, in-sample)", dict.fromkeys(outcomes, base_rate)),
@@ -933,6 +956,8 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
         "minutes": round((time.monotonic() - started) / 60, 1),
         "removed_env_keys": _REMOVED_AT_START,
         "attribution": fb.FB_ATTRIBUTION,
+        "market_context": bool(args.market_context),
+        "pinned_ids": bool(args.fb_ids),
     }
     report = render_fb_report(rows, meta)
     per_question = [
@@ -1043,6 +1068,16 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--member-timeout-min", type=int, default=240)
     p.add_argument("--member-batch", type=int, default=3, help="ForecastBench: questions per member in flight")
     p.add_argument("--seed", type=int, default=20261012)
+    p.add_argument(
+        "--market-context",
+        action="store_true",
+        help="ForecastBench: give each model the question's market/crowd price at freeze as its only research",
+    )
+    p.add_argument(
+        "--fb-ids",
+        default="",
+        help="ForecastBench: pin the sample to 'id_prefix@due_date,...' (an earlier run's questions)",
+    )
     return p
 
 
