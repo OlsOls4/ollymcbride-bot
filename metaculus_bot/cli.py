@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable, Iterable
+from datetime import UTC, datetime
 from typing import Any, Literal, NamedTuple, get_args
 
 from forecasting_tools import ForecastReport, MetaculusApi
@@ -16,6 +17,9 @@ from metaculus_bot.constants import (
     MANTIC_API_BASE_URL,
     MANTIC_TOURNAMENT_END_DATE,
     MANTIC_TOURNAMENT_ID,
+    MARKET_PULSE_END_DATE,
+    MARKET_PULSE_TOURNAMENT_ID,
+    MARKET_PULSE_TOURNAMENT_SLUG,
     METACULUS_CUP_ID,
     PERSIST_RESEARCH_ENABLED_ENV,
     PLATFORM_MANTIC,
@@ -59,6 +63,12 @@ from metaculus_bot.mantic import (
     preflight_mantic_tournaments,
     reset_post_drop_count,
 )
+from metaculus_bot.market_pulse import (
+    MARKET_PULSE_MAX_CONCURRENT_RESEARCH,
+    market_pulse_max_questions_per_run,
+    recover_unreadable_forecast_history,
+    select_questions_for_refresh,
+)
 from metaculus_bot.publish_hardening import apply_publish_hardening
 from metaculus_bot.research.persistence import ResearchPersistenceWriter
 from metaculus_bot.run_status import RUN_STATUS, record_cli_failure, write_run_status_from_environment
@@ -66,7 +76,9 @@ from metaculus_bot.run_status import RUN_STATUS, record_cli_failure, write_run_s
 logger = logging.getLogger(__name__)
 
 
-RunMode = Literal["tournament", "minibench", "quarterly_cup", "metaculus_cup", "test_questions", "mantic"]
+RunMode = Literal[
+    "tournament", "minibench", "quarterly_cup", "metaculus_cup", "test_questions", "mantic", "market_pulse"
+]
 
 
 class CliArgs(NamedTuple):
@@ -269,6 +281,62 @@ def _tournament_source(
     return lambda: template_bot.forecast_questions(matched, return_exceptions=True)
 
 
+def _market_pulse_source(
+    template_bot: TemplateForecaster,
+    only_posts: frozenset[int] | None,
+    *,
+    now: datetime | None = None,
+) -> Callable[[], Awaitable[list[Any]]]:
+    """Forecast-factory for Market Pulse: every open (sub)question that is due a forecast or an update.
+
+    Market Pulse is spot-scored and requires bots to keep updating, so this is the one
+    tournament-shaped mode that does NOT skip previously forecast questions. Which questions
+    are due is a rules-based clock over ``my_forecasts`` timestamps and close times
+    (``market_pulse.classify_for_refresh``), never a judgement of the forecast's content.
+    Groups arrive unpacked into subquestions by forecasting-tools. A subquestion whose list
+    payload lacks ``my_forecasts`` gets one detail re-read of its post; one still unreadable is
+    dropped (fail-shut), so an API change cannot turn into re-publishing everything each run.
+    """
+    template_bot.skip_previously_forecasted_questions = False
+    now = now or datetime.now(UTC)
+    open_questions = template_bot.metaculus_client.get_all_open_questions_from_tournament(MARKET_PULSE_TOURNAMENT_ID)
+    if only_posts is not None:
+        open_questions = [question for question in open_questions if question.id_of_post in only_posts]
+        logger.info(f"ONLY_POSTS: requested={_post_ids_csv(only_posts)} matched={len(open_questions)} question(s)")
+    seen = len(open_questions)
+    cap = market_pulse_max_questions_per_run()
+    selection = select_questions_for_refresh(open_questions, now=now, max_questions=cap)
+    if selection.unreadable:
+        recovered = recover_unreadable_forecast_history(
+            selection.unreadable,
+            lambda post_id: template_bot.metaculus_client.get_question_by_post_id(post_id, "unpack_subquestions"),
+        )
+        unreadable_ids = {id(question) for question in selection.unreadable}
+        readable = [question for question in open_questions if id(question) not in unreadable_ids]
+        selection = select_questions_for_refresh([*readable, *recovered], now=now, max_questions=cap)
+        for question in selection.unreadable:
+            logger.warning(
+                "SKIP_GUARD_UNREADABLE: question=%s post_id=%s platform=%s reason=my_forecasts_missing",
+                question.id_of_question,
+                question.id_of_post,
+                PLATFORM_METACULUS,
+            )
+    logger.info(selection.marker(seen))
+    if selection.capped:
+        logger.warning(
+            "MARKET_PULSE_CAPPED: cap=%d deferred=%d questions=%s (still due; next run takes them)",
+            cap,
+            len(selection.capped),
+            ",".join(str(question.id_of_question) for question in selection.capped),
+        )
+    # Nothing due still goes through forecast_questions (with []), like a tournament run with nothing
+    # new, so the per-run summary lines are emitted either way.
+    # The selection is already capped in priority order; keep the bot's own cap from re-cutting it by close time.
+    template_bot.max_questions_per_run = max(len(selection.selected), 1)
+    selected = selection.selected
+    return lambda: template_bot.forecast_questions(selected, return_exceptions=True)
+
+
 def _question_source(
     template_bot: TemplateForecaster, run_mode: RunMode, *, only_posts: frozenset[int] | None
 ) -> Callable[[], Awaitable[list[Any]]]:
@@ -299,6 +367,9 @@ def _question_source(
         # Mantic's platform via the ManticClient main injects; to not risk explosive spend, we won't update preds.
         template_bot.skip_previously_forecasted_questions = True
         return _tournament_source(template_bot, MANTIC_TOURNAMENT_ID, only_posts)
+    if run_mode == "market_pulse":
+        # Spot-scored and update-required: re-forecasts on a rules-based age clock, not a skip.
+        return _market_pulse_source(template_bot, only_posts)
     if run_mode == "test_questions":
         # Example questions are a good way to test the bot's performance on a single question
         return _test_questions_source(template_bot)
@@ -337,6 +408,8 @@ def persisted_tournament_id(run_mode: RunMode) -> str:
         return METACULUS_CUP_ID
     if run_mode == "mantic":
         return MANTIC_TOURNAMENT_ID
+    if run_mode == "market_pulse":
+        return MARKET_PULSE_TOURNAMENT_SLUG
     raise ValueError(f"Invalid run mode: {run_mode}")
 
 
@@ -374,7 +447,18 @@ def _check_tournament_dates(run_mode: RunMode) -> bool:
         return check_tournament_dates(
             logger, tournament_id=MANTIC_TOURNAMENT_ID, end_date_str=MANTIC_TOURNAMENT_END_DATE
         )
+    if run_mode == "market_pulse":
+        # Advisory, like the bot tournament: warn past the end date, raise at the shared hard stop.
+        check_tournament_dates(logger, tournament_id=MARKET_PULSE_TOURNAMENT_SLUG, end_date_str=MARKET_PULSE_END_DATE)
+        return False
     return False
+
+
+def _mode_forecaster_overrides(run_mode: RunMode) -> dict[str, Any]:
+    """Per-mode TemplateForecaster kwargs: Market Pulse spreads its research calls out further."""
+    if run_mode == "market_pulse":
+        return {"max_concurrent_research": MARKET_PULSE_MAX_CONCURRENT_RESEARCH}
+    return {}
 
 
 def _run_cli() -> None:
@@ -428,6 +512,7 @@ def _run_cli() -> None:
         research_sink=research_sink,
         llms=llms,
         metaculus_client=metaculus_client,
+        **_mode_forecaster_overrides(run_mode),
     )
 
     # Installed before the first completion. See docs/operations.md "Credit telemetry and the refill floor".
