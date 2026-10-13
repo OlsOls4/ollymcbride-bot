@@ -2,7 +2,7 @@ name: Backtest (FREE_MODE, resolved questions)
 
 # Zero-cost backtest of the free model chains on RESOLVED questions only (backtest_free.py).
 # source=forecastbench (default): keyless public ForecastBench data (market-source binary
-# questions, CC BY-SA 4.0, github.com/forecastingresearch/forecastbench-datasets) fetched at run
+# questions, or dataset-source ones with fb_kind=dataset; CC BY-SA 4.0, github.com/forecastingresearch/forecastbench-datasets) fetched at run
 # time; no Metaculus token is passed to the process at all. source=metaculus: the original path
 # (blocked since the API returns resolution=null to these tokens; see docs/free-mode.md).
 # workflow_dispatch ONLY: no schedule, no push trigger. It never publishes to Metaculus
@@ -43,6 +43,13 @@ on:
       groq_questions:
         description: "ForecastBench: Groq members on the first K questions (Groq Free is 200K tokens/day)"
         default: "20"
+      fb_kind:
+        description: "ForecastBench: market-source questions, or dataset-source ones (acled, dbnomics, fred, wikipedia, yfinance; the model sees the question's freeze value)"
+        type: choice
+        options:
+          - market
+          - dataset
+        default: market
       market_context:
         description: "ForecastBench: give the models the question's market price at freeze as research"
         type: boolean
@@ -168,6 +175,7 @@ jobs:
           IN_FLASH_QUESTIONS: ${{ inputs.flash_questions }}
           IN_GROQ_QUESTIONS: ${{ inputs.groq_questions }}
           IN_MARKET_CONTEXT: ${{ inputs.market_context }}
+          IN_FB_KIND: ${{ inputs.fb_kind }}
           IN_FB_IDS: ${{ inputs.fb_ids }}
         run: |
           mkdir -p backtests
@@ -176,6 +184,7 @@ jobs:
           if [ -n "$IN_FB_IDS" ]; then extra+=(--fb-ids "$IN_FB_IDS"); fi
           uv run --frozen --no-dev python backtest_free.py "${extra[@]}" \
             --source "${IN_SOURCE:-forecastbench}" \
+            --fb-kind "${IN_FB_KIND:-market}" \
             --groq-questions "${IN_GROQ_QUESTIONS:-20}" \
             --num-questions "$IN_NUM_QUESTIONS" \
             --tournaments "$IN_TOURNAMENTS" \
