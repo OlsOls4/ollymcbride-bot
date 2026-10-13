@@ -184,3 +184,38 @@ Proposed fixes (not applied; need clearer evidence or are config-only):
 3. Remove the Mistral links until the free key stops returning 429.
 4. Move gemini-3.1-flash-lite below gemini-3.5-flash-lite as the floor, once a larger backtest confirms it.
 5. Raise the NIM soft deadline or drop glm-5.3 / deepseek-v4.1-flash from backtests; check whether they serve live at all.
+
+## 13 Oct changes
+
+Code and workflow changes, pushed 13 Oct 2026:
+- Inkling is deny-listed. OpenRouter returns 403 "agentic harnesses only" for it.
+- No chain uses Mistral any more. The free key gets 0 RPM on medium and small.
+- Groq: 2,500 output tokens and 55 s pacing, so a call fits its 8K TPM limit.
+- `max_retries=0` on every link, a 900 s free-mode deadline, and a 780 s chain budget that keeps 120 s back for the Flash-Lite floors. NIM 429s back off and retry (10 s, then 30 s). NIM glm-5.3 and deepseek-v4.1-flash stream.
+- New optional keyed providers: Z.ai GLM Flash (`ZAI_API_KEY`) and Cloudflare Workers AI (`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, Free plan, which fails rather than bills). Gemma 4 runs on `GEMINI_API_KEY`.
+
+Health run [38381214605](https://github.com/OlsOls4/ollymcbride-bot/actions/runs/38381214605) (`free_keys_health.yaml`, chain=true):
+
+| Model | Result |
+|---|---|
+| Z.ai glm-4.7-flash | FAIL: 429, code 1305 "temporarily overloaded" |
+| Z.ai glm-4.5-flash | not probed (the script probes 4.7-flash only) |
+| Cloudflare @cf/openai/gpt-oss-120b | OK (HTTP 200) |
+| Other Cloudflare models | not probed |
+| AI Studio gemma-4-31b-it | FAIL: 500 InternalServerError (model list OK) |
+| NIM glm-5.3-flash | OK, 51 s |
+| NIM kimi-k2.6 | FAIL: 404 |
+| NIM kimi-k3 | OK, 51 s |
+| NIM nemotron-3-ultra | OK, 15 s |
+| NIM nemotron-3-super | OK, 6 s |
+| NIM glm-5.3 | OK, 26 s (bot chain path: OK, 3 s) |
+| NIM deepseek-v4.1-flash | OK, 135 s (bot chain path: OK, 134 s) |
+| Groq gpt-oss-120b | OK, 1 s, 3.1K prompt tokens |
+| Mistral | open-mistral-nemo, ministral-8b and ministral-14b OK; small, medium and magistral-small 429 (0 RPM). None of them is in a chain. |
+
+Swaps made after this run (one fix-up push):
+- Chain 1: gemma-4-31b-it was replaced by NIM nemotron-3-super, and Z.ai glm-4.7-flash by Cloudflare gpt-oss-120b.
+- Chain 2: NIM kimi-k2.6 was replaced by NIM nemotron-3-super.
+- Chain 3: gemma-4-31b-it was replaced by Groq gpt-oss-120b.
+
+Z.ai, Gemma and kimi-k2.6 are still allow-listed and can go back into a chain once a health run shows them OK.
