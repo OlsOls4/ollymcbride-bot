@@ -864,6 +864,11 @@ FREE_MODE_GEMINI_FREE_TIER_MODELS: frozenset[str] = frozenset(
         "gemini-2.5-pro",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
+        # Gemma 4 on the Gemini API: the pricing page lists it "Free of charge" on the free tier
+        # and "Not available" on the paid tier, so it can never bill (ai.google.dev/gemini-api/
+        # docs/pricing, Gemma 4 rows, checked 2026-10-13). Its quota is separate from Flash's.
+        "gemma-4-31b-it",
+        "gemma-4-26b-a4b-it",
     }
 )
 
@@ -877,53 +882,129 @@ FREE_MODE_GROQ_FREE_TIER_MODELS: frozenset[str] = frozenset(
 # are wired, so a typo cannot reach an unknown id. mistral-large-latest was dropped 2026-10-12:
 # the free key's /v1/models list does not include it (free_keys_health.yaml run 38313534110;
 # Large 4 is a preview with no -latest alias and is reported as tier_not_allowed on Free).
-FREE_MODE_MISTRAL_FREE_TIER_MODELS: frozenset[str] = frozenset({"mistral-medium-latest", "mistral-small-latest"})
+#
+# 2026-10-13: every call to medium/small returned 429 in the ForecastBench backtest and the key
+# probe. Free mode reports ``x-ratelimit-limit-req-minute: 0`` for those models (i.e. they are not
+# on the Free tier at all; waiting does not help), while the small open models (ministral-*,
+# open-mistral-nemo) are served. Those are no stronger than the Flash-Lite floor, so no forecaster
+# chain carries a Mistral link any more; the allow-list keeps the path testable.
+FREE_MODE_MISTRAL_FREE_TIER_MODELS: frozenset[str] = frozenset(
+    {"mistral-medium-latest", "mistral-small-latest", "ministral-14b-latest", "ministral-8b-latest"}
+)
+
+# Z.ai (Zhipu) API: GLM-4.7-Flash and GLM-4.5-Flash are listed "Free" in every price column
+# (docs.z.ai/guides/overview/pricing, checked 2026-10-13); no card is needed and Z.ai publishes no
+# numeric limit (third-party trackers report 1 concurrent request). GLM-5.3-Flash is PAID there and
+# is deliberately absent. OpenAI-compatible base https://api.z.ai/api/paas/v4.
+ZAI_API_KEY_ENV: str = "ZAI_API_KEY"
+FREE_MODE_ZAI_API_BASE: str = "https://api.z.ai/api/paas/v4"
+FREE_MODE_ZAI_FREE_TIER_MODELS: frozenset[str] = frozenset({"glm-4.7-flash", "glm-4.5-flash"})
+FREE_MODE_ZAI_PROBE_MODEL: str = "glm-4.7-flash"
+
+# Cloudflare Workers AI on the Workers FREE plan: 10,000 Neurons/day, reset 00:00 UTC; past the
+# allocation calls FAIL (error 4006) rather than bill, because the Free plan has no overage
+# (developers.cloudflare.com/workers-ai/platform/pricing, checked 2026-10-13). gpt-oss-120b costs
+# ~31.8K neurons per M input and ~68.2K per M output, so ~25 forecasts/day. Kimi K2.6 / GLM-5.2
+# return 403 on the Free plan and are absent. OpenAI-compatible base
+# https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1.
+CLOUDFLARE_API_TOKEN_ENV: str = "CLOUDFLARE_API_TOKEN"  # noqa: S105  # an env-var NAME, not a secret
+CLOUDFLARE_ACCOUNT_ID_ENV: str = "CLOUDFLARE_ACCOUNT_ID"
+FREE_MODE_CLOUDFLARE_API_BASE_TEMPLATE: str = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+FREE_MODE_CLOUDFLARE_FREE_TIER_MODELS: frozenset[str] = frozenset(
+    {
+        "@cf/openai/gpt-oss-120b",
+        "@cf/zai-org/glm-4.7-flash",
+        "@cf/nvidia/nemotron-3-120b-a12b",
+        "@cf/google/gemma-4-26b-a4b-it",
+    }
+)
+FREE_MODE_CLOUDFLARE_PROBE_MODEL: str = "@cf/openai/gpt-oss-120b"
+
+
+def free_openai_compat_endpoint(provider: str) -> tuple[str | None, str | None]:
+    """(api_base, api_key) for an OpenAI-compatible optional free provider, or (None, None)."""
+    if provider == "zai":
+        key = os.getenv(ZAI_API_KEY_ENV, "").strip()
+        return (FREE_MODE_ZAI_API_BASE, key) if key else (None, None)
+    if provider == "cloudflare":
+        key = os.getenv(CLOUDFLARE_API_TOKEN_ENV, "").strip()
+        account = os.getenv(CLOUDFLARE_ACCOUNT_ID_ENV, "").strip()
+        if key and account:
+            return FREE_MODE_CLOUDFLARE_API_BASE_TEMPLATE.format(account_id=account), key
+        return None, None
+    return None, None
+
+
+# Models refused at build time even though they look free: they never serve this bot.
+FREE_MODE_DENIED_MODELS: dict[str, str] = {
+    "openrouter/thinkingmachines/inkling:free": "403 'only available on agentic harnesses' on every call (2026-10-12/13)",
+    "openrouter/thinkingmachines/inkling-small:free": "same agentic-harness-only restriction as inkling:free",
+}
 
 # One chain per ensemble slot, strongest first. Each slot LEADS with a different model so a
 # healthy run keeps a diverse ensemble; the tails fall back across providers so a 429 / daily
 # cap / 5xx on one provider still yields a forecast. OpenRouter :free shares ONE account-wide
 # budget (20 RPM; 50 RPD under $10 lifetime credits, 1000 RPD at >= $10), so only slot 2 leads
 # on OpenRouter; NIM (~40 RPM per key, community-observed) and Gemini carry the rest.
+#
+# 2026-10-13 revision (docs/free-mode.md "Serving fixes, 13 Oct"):
+# * thinkingmachines/inkling:free removed: OpenRouter answers 403 "only available on agentic
+#   harnesses" on every call (24 h of live runs), so slot 2 was silently a second kimi-k3.
+#   It is now on FREE_MODE_DENIED_MODELS so it cannot come back by accident.
+# * Mistral links removed: the free key gets 429 on every call to medium/small (see
+#   FREE_MODE_MISTRAL_FREE_TIER_MODELS); the code path stays for a future key.
+# * groq/qwen/qwen3.8-27b removed: its Free-plan 1K output-tokens/min cap rejects a forecast.
+# * Floors: gemini-3.5-flash-lite before gemini-3.1-flash-lite in every slot. In the
+#   ForecastBench backtest (run 38324248999, n=60, not used for any tuning) 3.1 Flash-Lite had
+#   the worst log score of any member (dL -0.117 [-0.233, -0.012] vs the chain median); 3.5 is
+#   tried first and 3.1 only serves once 3.5's per-model daily quota is gone.
+# * Optional free providers (Z.ai GLM Flash, Cloudflare Workers AI, AI Studio Gemma) sit in the
+#   tails and drop out until their key exists.
 FREE_MODE_FORECASTER_CHAINS: tuple[tuple[str, ...], ...] = (
     (
         "nvidia_nim/moonshotai/kimi-k3",
-        "openrouter/thinkingmachines/inkling:free",
-        "nvidia_nim/z-ai/glm-5.3",
-        "mistral/mistral-medium-latest",
+        "nvidia_nim/z-ai/glm-5.3-flash",
+        "gemini/gemma-4-31b-it",
+        "zai/glm-4.7-flash",
         "gemini/gemini-3.5-flash-lite",
+        "gemini/gemini-3.1-flash-lite",
     ),
     (
-        "openrouter/thinkingmachines/inkling:free",
-        "nvidia_nim/moonshotai/kimi-k3",
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nvidia_nim/moonshotai/kimi-k2.6",
+        "cloudflare/@cf/openai/gpt-oss-120b",
         "groq/openai/gpt-oss-120b",
+        "gemini/gemini-3.5-flash-lite",
         "gemini/gemini-3.1-flash-lite",
     ),
     (
         "gemini/gemini-3.8-flash",
-        "nvidia_nim/z-ai/glm-5.3",
-        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-        "mistral/mistral-medium-latest",
+        "nvidia_nim/z-ai/glm-5.3-flash",
+        "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b",
+        "gemini/gemma-4-31b-it",
         "gemini/gemini-3.5-flash-lite",
+        "gemini/gemini-3.1-flash-lite",
     ),
     (
         "nvidia_nim/z-ai/glm-5.3",
-        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
         "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+        "cloudflare/@cf/openai/gpt-oss-120b",
         "groq/openai/gpt-oss-120b",
+        "gemini/gemini-3.5-flash-lite",
         "gemini/gemini-3.1-flash-lite",
     ),
     (
         "openrouter/apodex/apodex-1.1-mini:free",
         "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
         "openrouter/dots-studio/dots-3-note-preview:free",
-        "groq/qwen/qwen3.8-27b",
+        "groq/openai/gpt-oss-20b",
         "gemini/gemini-3.5-flash-lite",
+        "gemini/gemini-3.1-flash-lite",
     ),
 )
-# Groq / Mistral links (added 2026-10-12) sit just before each slot's Flash-Lite floor: they only
-# serve when the stronger links above have failed, and they drop out entirely while their
-# optional keys are unset, so the live chains are unchanged until Olly adds those secrets.
+# Providers whose key is OPTIONAL: their links sit in a chain's tail (never the lead, never the
+# floor) and drop out entirely while the key is unset.
+FREE_MODE_OPTIONAL_PROVIDERS: frozenset[str] = frozenset({"groq", "mistral", "zai", "cloudflare"})
 
 # Parser, summarizer, market ranker/author, page digest, financial classifier and the (disabled)
 # stacker/analyzer slots. Flash-Lite leads because it has the largest free daily allowance
@@ -946,15 +1027,50 @@ FREE_MODE_MIN_INTERVAL_S: dict[str, float] = {
     "nvidia_nim": 60.0 / 30,  # ~40 RPM limit
     "gemini-flash": 60.0 / 4,  # 3.x Flash measured 5 RPM / 20 RPD on the free tier
     "gemini-flash-lite": 60.0 / 12,  # Flash-Lite measured 15 RPM / 500 RPD
-    "groq": 60.0 / 25,  # Free plan 30 RPM per org
+    # Groq Free: the binding limit is 8K TOKENS/min per org, and Groq counts max_tokens up front.
+    # A forecast is ~4.5K prompt + FREE_MODE_GROQ_MAX_TOKENS, so at most one per ~55 s.
+    "groq": 55.0,
     "mistral": 2.0,  # Free mode is ~1 request/s (unpublished; read from the console)
+    "gemma": 20.0,  # Gemma on AI Studio: small free TPM (historically 15K/min), so <= 3/min
+    "zai": 5.0,  # GLM Flash free: reported 1 concurrent request
+    "cloudflare": 4.0,  # Workers AI: 20 RPM on standard billing
 }
-# Per-link litellm timeouts. A forecaster chain lives inside FORECASTER_SOFT_DEADLINE (600 s), so
-# a stalled first link must leave the next link room to answer.
+# --- Timeouts and the chain budget (2026-10-13) ---
+# Before this revision a chain had no total budget and each link could take 240 s TIMES the
+# OpenAI SDK's 2 hidden retries, so slot 4 (glm-5.3 first) and slot 3 (3.8 Flash -> glm-5.3)
+# hit the 600 s forecaster soft deadline and the WHOLE slot was dropped, floor included
+# (live runs 12-13 Oct; ForecastBench run 38324248999: glm-5.3 0/60). Now:
+# * every link is built with max_retries=0 (the chain is the only retry layer);
+# * FREE_MODE forecasters get a 900 s soft deadline (forecaster.py), and each forecaster chain a
+#   total budget below it that keeps FREE_MODE_FLOOR_RESERVE_S for the last link, so a slow head
+#   can never starve the floor;
+# * slow NIM reasoning models are STREAMED with an idle-read timeout and a longer total cap;
+# * a plain 429 on NIM is retried on the same link with backoff while the budget allows.
+# 900 s still fits the cadence: a run takes questions concurrently and the job cap is 80 min;
+# a run that outlasts the 20/30-min cron slot only delays the next one (concurrency group,
+# cancel-in-progress false), it never overlaps or cancels it.
+FREE_MODE_FORECASTER_SOFT_DEADLINE_S: int = 900
+# Parser/structured-output calls after the chain answers also run inside the soft deadline.
+FREE_MODE_FORECASTER_CHAIN_BUDGET_S: float = 780.0
+FREE_MODE_FLOOR_RESERVE_S: float = 120.0
+FREE_MODE_MIN_LINK_S: float = 45.0
 FREE_MODE_FORECASTER_LINK_TIMEOUT_S: float = 240.0
 FREE_MODE_UTILITY_LINK_TIMEOUT_S: float = 90.0
+# Slow NIM reasoning models: streamed, so a model that is producing tokens is not killed by a
+# whole-response read timeout, and a dead one is caught by the idle timeout instead.
+FREE_MODE_NIM_SLOW_MODELS: tuple[str, ...] = ("nvidia_nim/z-ai/glm-5.3", "nvidia_nim/deepseek-ai/deepseek-v4.1-flash")
+FREE_MODE_NIM_SLOW_LINK_TIMEOUT_S: float = 600.0
+FREE_MODE_STREAM_IDLE_TIMEOUT_S: float = 180.0
+# Same-link retries for a plain (non-daily) 429, per provider, and the backoff before each.
+FREE_MODE_RATE_LIMIT_RETRY_PROVIDERS: frozenset[str] = frozenset({"nvidia_nim"})
+FREE_MODE_RATE_LIMIT_BACKOFF_S: tuple[float, ...] = (10.0, 30.0)
 FREE_MODE_FORECASTER_MAX_TOKENS: int = 32_000
 FREE_MODE_NIM_MAX_TOKENS: int = 16_384
-# Groq Free counts max_tokens against its 8K TPM, so a large completion budget alone would 429.
-FREE_MODE_GROQ_MAX_TOKENS: int = 4_096
+# Groq Free counts max_tokens against its 8K TPM up front, so prompt (~4.5K) + max_tokens must
+# stay under 8K: 4,096 made every forecast call 413/429. gpt-oss reasons inside max_tokens, so
+# it is asked for low reasoning effort to leave room for the answer.
+FREE_MODE_GROQ_MAX_TOKENS: int = 2_500
+FREE_MODE_GROQ_EXTRA_PARAMS: dict[str, str] = {"reasoning_effort": "low"}
+# Groq links that take FREE_MODE_GROQ_EXTRA_PARAMS (reasoning models only).
+FREE_MODE_GROQ_REASONING_MODELS: frozenset[str] = frozenset({"groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"})
 FREE_MODE_UTILITY_MAX_TOKENS: int = 16_000
