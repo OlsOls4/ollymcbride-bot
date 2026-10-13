@@ -1,0 +1,277 @@
+{
+ "now": "2026-11-02T12:00:00Z",
+ "posts": [
+  {
+   "id": 50001,
+   "title": "S&P 500 closing level",
+   "nr_forecasters": 12,
+   "forecasts_count": 30,
+   "published_at": "2026-10-23T12:00:00Z",
+   "projects": {
+    "tournament": [
+     {
+      "id": 33131,
+      "slug": "market-pulse-26q4"
+     }
+    ],
+    "default_project": {
+     "id": 33131
+    }
+   },
+   "group_of_questions": {
+    "description": "Group background",
+    "resolution_criteria": "Resolves to the official close.",
+    "fine_print": "fp",
+    "questions": [
+     {
+      "id": 60001,
+      "title": "S&P 500 close (Nov 14)",
+      "type": "numeric",
+      "status": "open",
+      "label": "Nov 14",
+      "open_time": "2026-10-23T12:00:00Z",
+      "scheduled_close_time": "2026-11-14T12:00:00Z",
+      "scheduled_resolve_time": "2026-11-15T12:00:00Z",
+      "unit": "USD",
+      "scaling": {
+       "range_min": 4000.0,
+       "range_max": 7000.0,
+       "zero_point": null,
+       "inbound_outcome_count": 200,
+       "nominal_min": 4000.0,
+       "nominal_max": 7000.0
+      },
+      "open_lower_bound": false,
+      "open_upper_bound": false,
+      "my_forecasts": {
+       "history": [],
+       "latest": null
+      },
+      "include_bots_in_aggregates": true
+     },
+     {
+      "id": 60002,
+      "title": "S&P 500 close (Nov 3)",
+      "type": "numeric",
+      "status": "open",
+      "label": "Nov 3",
+      "open_time": "2026-10-23T12:00:00Z",
+      "scheduled_close_time": "2026-11-03T08:00:00Z",
+      "scheduled_resolve_time": "2026-11-04T08:00:00Z",
+      "unit": "USD",
+      "scaling": {
+       "range_min": 4000.0,
+       "range_max": 7000.0,
+       "zero_point": null,
+       "inbound_outcome_count": 200,
+       "nominal_min": 4000.0,
+       "nominal_max": 7000.0
+      },
+      "open_lower_bound": true,
+      "open_upper_bound": true,
+      "my_forecasts": {
+       "history": [
+        {
+         "start_time": 1793592000.0,
+         "end_time": null
+        }
+       ],
+       "latest": {
+        "start_time": 1793592000.0,
+        "end_time": null
+       }
+      },
+      "include_bots_in_aggregates": true
+     },
+     {
+      "id": 60003,
+      "title": "S&P 500 close (Nov 28)",
+      "type": "numeric",
+      "status": "open",
+      "label": "Nov 28",
+      "open_time": "2026-10-23T12:00:00Z",
+      "scheduled_close_time": "2026-11-28T12:00:00Z",
+      "scheduled_resolve_time": "2026-11-29T12:00:00Z",
+      "unit": "USD",
+      "scaling": {
+       "range_min": 4000.0,
+       "range_max": 7000.0,
+       "zero_point": null,
+       "inbound_outcome_count": 200,
+       "nominal_min": 4000.0,
+       "nominal_max": 7000.0
+      },
+      "open_lower_bound": false,
+      "open_upper_bound": true,
+      "my_forecasts": {
+       "history": [
+        {
+         "start_time": 1793512800.0,
+         "end_time": null
+        }
+       ],
+       "latest": {
+        "start_time": 1793512800.0,
+        "end_time": null
+       }
+      },
+      "include_bots_in_aggregates": true
+     },
+     {
+      "id": 60004,
+      "title": "S&P 500 close (Dec 12)",
+      "type": "numeric",
+      "status": "open",
+      "label": "Dec 12",
+      "open_time": "2026-10-23T12:00:00Z",
+      "scheduled_close_time": "2026-12-12T12:00:00Z",
+      "scheduled_resolve_time": "2026-12-13T12:00:00Z",
+      "unit": "USD",
+      "scaling": {
+       "range_min": 4000.0,
+       "range_max": 7000.0,
+       "zero_point": null,
+       "inbound_outcome_count": 200,
+       "nominal_min": 4000.0,
+       "nominal_max": 7000.0
+      },
+      "open_lower_bound": true,
+      "open_upper_bound": false,
+      "my_forecasts": {
+       "history": [
+        {
+         "start_time": 1793613600.0,
+         "end_time": null
+        }
+       ],
+       "latest": {
+        "start_time": 1793613600.0,
+        "end_time": null
+       }
+      },
+      "include_bots_in_aggregates": true
+     },
+     {
+      "id": 60005,
+      "title": "S&P 500 close (Dec 19)",
+      "type": "numeric",
+      "status": "upcoming",
+      "label": "Dec 19",
+      "open_time": "2026-10-23T12:00:00Z",
+      "scheduled_close_time": "2026-12-19T12:00:00Z",
+      "scheduled_resolve_time": "2026-12-20T12:00:00Z",
+      "unit": "USD",
+      "scaling": {
+       "range_min": 4000.0,
+       "range_max": 7000.0,
+       "zero_point": null,
+       "inbound_outcome_count": 200,
+       "nominal_min": 4000.0,
+       "nominal_max": 7000.0
+      },
+      "open_lower_bound": true,
+      "open_upper_bound": true,
+      "my_forecasts": {
+       "history": [],
+       "latest": null
+      },
+      "include_bots_in_aggregates": true
+     }
+    ]
+   }
+  },
+  {
+   "id": 50002,
+   "title": "Bitcoin price",
+   "nr_forecasters": 5,
+   "forecasts_count": 9,
+   "published_at": "2026-10-28T12:00:00Z",
+   "projects": {
+    "tournament": [
+     {
+      "id": 33131,
+      "slug": "market-pulse-26q4"
+     }
+    ],
+    "default_project": {
+     "id": 33131
+    }
+   },
+   "group_of_questions": {
+    "description": "BTC background",
+    "resolution_criteria": "Coinbase close.",
+    "fine_print": "",
+    "questions": [
+     {
+      "id": 60011,
+      "title": "S&P 500 close (Nov 30)",
+      "type": "numeric",
+      "status": "open",
+      "label": "Nov 30",
+      "open_time": "2026-10-23T12:00:00Z",
+      "scheduled_close_time": "2026-11-30T12:00:00Z",
+      "scheduled_resolve_time": "2026-12-01T12:00:00Z",
+      "unit": "USD",
+      "scaling": {
+       "range_min": 20000.0,
+       "range_max": 200000.0,
+       "zero_point": 0.0,
+       "inbound_outcome_count": 200,
+       "nominal_min": 20000.0,
+       "nominal_max": 200000.0
+      },
+      "open_lower_bound": true,
+      "open_upper_bound": true,
+      "my_forecasts": {
+       "history": [
+        {
+         "start_time": 1793584800.0,
+         "end_time": 1793617200.0
+        }
+       ],
+       "latest": {
+        "start_time": 1793584800.0,
+        "end_time": 1793617200.0
+       }
+      },
+      "include_bots_in_aggregates": true
+     },
+     {
+      "id": 60012,
+      "title": "S&P 500 close (Nov 4)",
+      "type": "numeric",
+      "status": "open",
+      "label": "Nov 4",
+      "open_time": "2026-10-23T12:00:00Z",
+      "scheduled_close_time": "2026-11-03T18:00:00Z",
+      "scheduled_resolve_time": "2026-11-04T18:00:00Z",
+      "unit": "USD",
+      "scaling": {
+       "range_min": 20000.0,
+       "range_max": 200000.0,
+       "zero_point": 0.0,
+       "inbound_outcome_count": 200,
+       "nominal_min": 20000.0,
+       "nominal_max": 200000.0
+      },
+      "open_lower_bound": false,
+      "open_upper_bound": true,
+      "my_forecasts": {
+       "history": [
+        {
+         "start_time": 1793602800.0,
+         "end_time": null
+        }
+       ],
+       "latest": {
+        "start_time": 1793602800.0,
+        "end_time": null
+       }
+      },
+      "include_bots_in_aggregates": true
+     }
+    ]
+   }
+  }
+ ]
+}
