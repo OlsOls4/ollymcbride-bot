@@ -43,6 +43,13 @@ on:
       groq_questions:
         description: "ForecastBench: Groq members on the first K questions (Groq Free is 200K tokens/day)"
         default: "20"
+      market_context:
+        description: "ForecastBench: give the models the question's market price at freeze as research"
+        type: boolean
+        default: false
+      fb_ids:
+        description: "ForecastBench: pin the sample to 'id_prefix@due_date,...' (empty = seeded sample)"
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}
@@ -160,9 +167,14 @@ jobs:
           IN_MEMBERS: ${{ inputs.members }}
           IN_FLASH_QUESTIONS: ${{ inputs.flash_questions }}
           IN_GROQ_QUESTIONS: ${{ inputs.groq_questions }}
+          IN_MARKET_CONTEXT: ${{ inputs.market_context }}
+          IN_FB_IDS: ${{ inputs.fb_ids }}
         run: |
           mkdir -p backtests
-          uv run --frozen --no-dev python backtest_free.py \
+          extra=()
+          if [ "$IN_MARKET_CONTEXT" = "true" ]; then extra+=(--market-context); fi
+          if [ -n "$IN_FB_IDS" ]; then extra+=(--fb-ids "$IN_FB_IDS"); fi
+          uv run --frozen --no-dev python backtest_free.py "${extra[@]}" \
             --source "${IN_SOURCE:-forecastbench}" \
             --groq-questions "${IN_GROQ_QUESTIONS:-20}" \
             --num-questions "$IN_NUM_QUESTIONS" \
