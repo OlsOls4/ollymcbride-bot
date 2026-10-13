@@ -239,3 +239,50 @@ def test_notices_carry_every_row_within_the_annotation_cap() -> None:
     body = "\n".join(b for t, b in notes if t.startswith("FB rows"))
     assert all(f"v{i} n=3" in body for i in range(19))
     assert bf._gh_escape("a%\nb") == "a%25%0Ab"
+
+
+def test_market_context_text_carries_only_the_freeze_price() -> None:
+    it = _item("a", "manifold")
+    it.market_value = 0.314
+    it.freeze_date = date(2026, 7, 1)
+    text = fb.market_context_text(it)
+    assert text is not None
+    assert "Manifold (play-money) price: 31.4% probability of YES" in text
+    assert "2026-07-01" in text
+    assert "http" not in text  # no URL in the prompt
+    it.market_value = None
+    assert fb.market_context_text(it) is None
+
+
+def test_select_by_ids_pins_an_earlier_sample_in_order() -> None:
+    items = [
+        _item("0xabc123", "polymarket", due=date(2026, 7, 5)),
+        _item("0xabc123", "polymarket", due=date(2026, 7, 19)),
+        _item("Zq9", "manifold"),
+        _item("42741", "metaculus"),
+    ]
+    spec = "42741, 0xabc1@2026-07-19,missing@2026-01-01,Zq9"
+    got = fb.select_by_ids(items, spec)
+    assert [(g.fb_id, g.due_date) for g in got] == [
+        ("42741", items[3].due_date),
+        ("0xabc123", date(2026, 7, 19)),
+        ("Zq9", items[2].due_date),
+    ]
+    assert fb.parse_fb_ids("") == []
+
+
+def test_backtest_parser_has_market_variant_flags() -> None:
+    args = bf._parser().parse_args(["--source", "forecastbench", "--market-context", "--fb-ids", "a@2026-07-05"])
+    assert args.market_context is True
+    assert args.fb_ids == "a@2026-07-05"
+    assert bf._parser().parse_args([]).market_context is False
+
+
+def test_workflow_wires_market_context_and_pinned_ids() -> None:
+    text = _WF.read_text()
+    wf = yaml.safe_load(text)
+    inputs = wf.get("on", wf.get(True))["workflow_dispatch"]["inputs"]
+    assert inputs["market_context"]["default"] is False
+    assert inputs["fb_ids"]["default"] == ""
+    assert "--market-context" in text
+    assert '--fb-ids "$IN_FB_IDS"' in text
