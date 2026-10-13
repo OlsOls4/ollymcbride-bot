@@ -316,35 +316,41 @@ async def probe_gemma(session: aiohttp.ClientSession) -> list[str]:
             )
     except Exception as exc:  # noqa: BLE001
         rows.append(f"gemma models: ERROR {type(exc).__name__}")
-    model = "gemini/" + GEMMA_IDS[0]
-    t0 = time.monotonic()
-    try:
-        resp = await litellm.acompletion(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are terse."},
-                {"role": "user", "content": "Reply with the single word OK."},
-            ],
-            max_tokens=32,
-            timeout=90,
-            api_key=key,
-            max_retries=0,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        rows.append(
-            f"gemma chat {model} (with system prompt): OK {time.monotonic() - t0:.0f}s ({'non-empty' if text else 'EMPTY'})"
-        )
-    except Exception as exc:  # noqa: BLE001
-        rows.append(
-            f"gemma chat {model}: ERROR {type(exc).__name__} {getattr(exc, 'status_code', '')} {str(exc)[:160]}"
-        )
+    for gid in GEMMA_IDS:
+        model = "gemini/" + gid
+        t0 = time.monotonic()
+        try:
+            resp = await litellm.acompletion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are terse."},
+                    {"role": "user", "content": "Reply with the single word OK."},
+                ],
+                max_tokens=32,
+                timeout=90,
+                api_key=key,
+                max_retries=0,
+            )
+            text = (resp.choices[0].message.content or "").strip()
+            rows.append(
+                f"gemma chat {model} (with system prompt): OK {time.monotonic() - t0:.0f}s "
+                f"({'non-empty' if text else 'EMPTY'})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            rows.append(
+                f"gemma chat {model}: ERROR {type(exc).__name__} {getattr(exc, 'status_code', '')} {str(exc)[:160]}"
+            )
+        await asyncio.sleep(C.FREE_MODE_MIN_INTERVAL_S.get("gemma", 20.0))
     return rows
 
 
 # Optional new providers probes.
 async def probe_optional_openai_compat(session: aiohttp.ClientSession) -> list[str]:
     rows: list[str] = []
-    for name, model in (("zai", C.FREE_MODE_ZAI_PROBE_MODEL), ("cloudflare", C.FREE_MODE_CLOUDFLARE_PROBE_MODEL)):
+    # Every allow-listed Z.ai and Cloudflare id (a handful of 32-token calls), not just the probe model.
+    probes = [("zai", m) for m in sorted(C.FREE_MODE_ZAI_FREE_TIER_MODELS)]
+    probes += [("cloudflare", m) for m in sorted(C.FREE_MODE_CLOUDFLARE_FREE_TIER_MODELS)]
+    for name, model in probes:
         base, key = C.free_openai_compat_endpoint(name)
         if not (base and key):
             rows.append(f"{name}: NOT CONFIGURED")
@@ -368,7 +374,50 @@ async def probe_optional_openai_compat(session: aiohttp.ClientSession) -> list[s
     return rows
 
 
-# The bot's own chain path probes.
+# The bot's own chain path probes: the slow NIM links, every non-floor link of the live chains
+# (end to end through build_free_chain with a realistic-size prompt), and the allow-listed
+# candidates that were swapped out after a failed health run.
+SWAPPED_OUT_CANDIDATES: tuple[str, ...] = (
+    "zai/glm-4.7-flash",
+    "zai/glm-4.5-flash",
+    "gemini/gemma-4-31b-it",
+    "nvidia_nim/moonshotai/kimi-k2.6",
+)
+
+
+def _chain_probe_models() -> tuple[str, ...]:
+    seen: dict[str, None] = {}
+    for m in C.FREE_MODE_NIM_SLOW_MODELS:
+        seen[m] = None
+    for chain in C.FREE_MODE_FORECASTER_CHAINS[: C.FREE_MODE_ENSEMBLE_SIZE_DEFAULT]:
+        for m in chain:
+            # Skip OpenRouter (never used here) and Gemini Flash / Flash-Lite (keep their quota).
+            if m.startswith(("openrouter/", "gemini/gemini-")):
+                continue
+            seen[m] = None
+    for m in SWAPPED_OUT_CANDIDATES:
+        seen[m] = None
+    return tuple(seen)
+
+
+CHAIN_PROBE_MODELS: tuple[str, ...] = _chain_probe_models()
+
+_KEY_ENV: dict[str, str] = {
+    "nvidia_nim": "NVIDIA_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
+
+
+def _has_key(model: str) -> bool:
+    provider = model.split("/", 1)[0]
+    if provider in ("zai", "cloudflare"):
+        return all(C.free_openai_compat_endpoint(provider))
+    env = _KEY_ENV.get(provider)
+    return bool(env and os.getenv(env, "").strip())
+
+
 async def probe_chain() -> list[str]:
     rows: list[str] = []
     if not os.getenv("NVIDIA_API_KEY", "").strip():
@@ -389,7 +438,7 @@ async def probe_chain() -> list[str]:
         except Exception as exc:  # noqa: BLE001
             return f"chain {model}: FAILED {time.monotonic() - t0:.0f}s {type(exc).__name__} {str(exc)[:200]}"
 
-    rows += await asyncio.gather(*(one(m) for m in C.FREE_MODE_NIM_SLOW_MODELS))
+    rows += await asyncio.gather(*(one(m) for m in CHAIN_PROBE_MODELS if _has_key(m)))
     return rows
 
 
