@@ -86,6 +86,25 @@ MODEL_CUTOFFS: dict[str, ModelCutoff] = {
     "groq/openai/gpt-oss-120b": ModelCutoff(
         date(2024, 6, 30), "stated", "OpenAI gpt-oss model card, arXiv 2508.10925 (June 2024)"
     ),
+    "groq/openai/gpt-oss-20b": ModelCutoff(
+        date(2024, 6, 30), "stated", "OpenAI gpt-oss model card, arXiv 2508.10925 (June 2024)"
+    ),
+    "cloudflare/@cf/openai/gpt-oss-120b": ModelCutoff(
+        date(2024, 6, 30), "stated", "OpenAI gpt-oss model card, arXiv 2508.10925 (June 2024)"
+    ),
+    "nvidia_nim/z-ai/glm-5.3-flash": ModelCutoff(
+        date(2026, 8, 26), "release-date proxy", "none published; released 2026-08-26 (https://z.ai/blog/glm-5.3-flash)"
+    ),
+    "nvidia_nim/nvidia/nemotron-3-super-120b-a12b": ModelCutoff(
+        date(2026, 3, 11),
+        "release-date proxy",
+        "released 2026-03-11 (https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b/modelcard)",
+    ),
+    "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b": ModelCutoff(
+        date(2026, 6, 4),
+        "release-date proxy",
+        "released 2026-06-04 (https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b/modelcard)",
+    ),
     "groq/qwen/qwen3.8-27b": ModelCutoff(
         date(2026, 8, 15), "release-date proxy", "none published; released 2026-08-15 (huggingface.co/Qwen)"
     ),
@@ -293,6 +312,64 @@ def stratified_sample(items: Sequence[FBQuestion], n: int, *, seed: int) -> list
         remaining = nxt
     chosen = chosen[:n]
     rng.shuffle(chosen)
+    return chosen
+
+
+_MARKET_LABEL: dict[str, str] = {
+    "polymarket": "Polymarket price",
+    "manifold": "Manifold (play-money) price",
+    "metaculus": "Metaculus community prediction",
+    "infer": "INFER crowd forecast",
+}
+
+
+def market_context_text(item: FBQuestion) -> str | None:
+    """Research text carrying ONLY the question's own market/crowd probability at freeze time.
+
+    The live bot's prediction-market research shows a same-question market price; this mirrors
+    that for the backtest (no URL, no other research). None when the item has no market value.
+    """
+    if item.market_value is None:
+        return None
+    when = (item.freeze_date or item.due_date).isoformat()
+    label = _MARKET_LABEL.get(item.source, f"{item.source} crowd forecast")
+    return (
+        "## Prediction Market Snapshot\n"
+        f"One market/crowd forecast on this same question, as of {when}:\n"
+        f"- {label}: {item.market_value:.1%} probability of YES.\n\n"
+        "No other research report is available. Forecast from the question text, the resolution "
+        "criteria, this market price and your own background knowledge, anchored on base rates."
+    )
+
+
+def parse_fb_ids(spec: str) -> list[tuple[str, date | None]]:
+    """``"id_prefix@YYYY-MM-DD,..."`` (the date part optional) -> [(prefix, due date or None)]."""
+    out: list[tuple[str, date | None]] = []
+    for tok in (t.strip() for t in spec.split(",")):
+        if not tok:
+            continue
+        prefix, _, due = tok.partition("@")
+        out.append((prefix.strip(), parse_fb_date(due) if due else None))
+    return out
+
+
+def select_by_ids(items: Sequence[FBQuestion], spec: str) -> list[FBQuestion]:
+    """The items named by ``spec`` (see :func:`parse_fb_ids`), in spec order, one per entry.
+
+    Pins a rerun to an earlier run's exact sample, which a re-fetch would not reproduce once
+    ForecastBench publishes more resolutions. An entry with no match is skipped.
+    """
+    chosen: list[FBQuestion] = []
+    used: set[tuple[str, date]] = set()
+    for prefix, due in parse_fb_ids(spec):
+        cands = sorted(
+            (it for it in items if it.fb_id.startswith(prefix) and (due is None or it.due_date == due)),
+            key=lambda q: (q.due_date, q.resolution_date),
+        )
+        pick = next((it for it in cands if (it.fb_id, it.due_date) not in used), None)
+        if pick is not None:
+            used.add((pick.fb_id, pick.due_date))
+            chosen.append(pick)
     return chosen
 
 
