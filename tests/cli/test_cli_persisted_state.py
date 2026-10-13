@@ -18,6 +18,7 @@ from metaculus_bot.cli import RunMode, persisted_platform, persisted_tournament_
 from metaculus_bot.cli import main as cli_main
 from metaculus_bot.constants import (
     MANTIC_TOURNAMENT_ID,
+    MARKET_PULSE_TOURNAMENT_SLUG,
     METACULUS_CUP_ID,
     PERSIST_RESEARCH_ENABLED_ENV,
     TOURNAMENT_ID,
@@ -42,6 +43,7 @@ class TestPersistedTournamentId:
         "quarterly_cup": METACULUS_CUP_ID,
         "metaculus_cup": METACULUS_CUP_ID,
         "mantic": MANTIC_TOURNAMENT_ID,
+        "market_pulse": MARKET_PULSE_TOURNAMENT_SLUG,
         # No label fits the evergreen set; retained so the archive's existing test-run records stay comparable.
         "test_questions": TOURNAMENT_ID,
     }
