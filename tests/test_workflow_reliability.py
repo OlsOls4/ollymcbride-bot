@@ -81,6 +81,8 @@ _MIN_JOB_CAP_MINUTES = 5
 # ollymcbride-bot fork: the FREE_MODE backtest is paced by free-tier rate limits and legitimately
 # runs for hours; it holds no OpenRouter or paid key and is dispatch-only (TestFreeBacktestWorkflow).
 _LONG_RUNNING_NON_BOT: dict[str, int] = {".github/workflows/backtest_free.yaml": 340}
+# ollymcbride-bot fork: the six-hourly Market Pulse update workflow (TestScheduledBotCadence).
+_MARKET_PULSE_WORKFLOW = ".github/workflows/run_bot_on_market_pulse.yaml"
 
 
 def _workflow(rel_path: str) -> dict[str, Any]:
@@ -120,6 +122,7 @@ class TestEveryJobIsCapped:
             ".github/workflows/fetch_diagnostic.yaml",
             ".github/workflows/forecast_notification_test.yaml",
             ".github/workflows/free_keys_health.yaml",
+            ".github/workflows/run_bot_on_market_pulse.yaml",
             ".github/workflows/run_bot_on_metaculus_cup.yaml",
             ".github/workflows/run_bot_on_minibench.yaml",
             ".github/workflows/run_bot_on_tournament.yaml",
@@ -303,13 +306,28 @@ class TestScheduledBotCadence:
         # ollymcbride-bot fork: the Mantic workflow is deleted and the Metaculus Cup schedule is
         # removed (bots are not prize-eligible there; the free daily budgets go to FutureEval +
         # MiniBench), so only these two run on a schedule.
+        # Market Pulse (2026-10-13) runs every 6 hours: it re-forecasts on a ~24 h / ~6 h age clock
+        # rather than racing new questions, so it is pinned by its own cadence test below.
         assert sorted(self.scheduled) == [
+            ".github/workflows/run_bot_on_market_pulse.yaml",
             ".github/workflows/run_bot_on_minibench.yaml",
             ".github/workflows/run_bot_on_tournament.yaml",
         ]
 
+    def test_market_pulse_runs_every_six_hours_off_the_hour(self) -> None:
+        crons = self.scheduled[_MARKET_PULSE_WORKFLOW]
+        assert len(crons) >= 2, "a backup entry covers GitHub dropping a schedule under load"
+        for cron in crons:
+            minute, hour, day, month, weekday = cron.split()
+            assert (hour, day, month, weekday) == ("*/6", "*", "*", "*"), cron
+            assert minute.isdigit(), cron
+            assert int(minute) != 0, cron
+        assert "--mode market_pulse" in _named_step(_workflow(_MARKET_PULSE_WORKFLOW), "Run bot")["run"]
+
     def test_every_scheduled_bot_workflow_is_hourly_and_off_the_hour(self) -> None:
         for rel_path, crons in self.scheduled.items():
+            if rel_path == _MARKET_PULSE_WORKFLOW:
+                continue
             assert len(crons) >= 2, (
                 f"{rel_path}: {len(crons)} cron entry(ies). GitHub silently drops schedules under "
                 "runner load, so the cadence is split across several entries rather than one */N"
