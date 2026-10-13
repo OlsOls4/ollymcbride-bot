@@ -70,6 +70,7 @@ import aiohttp
 import openai
 from forecasting_tools.data_models.questions import MetaculusQuestion
 
+from metaculus_bot import market_anchor
 from metaculus_bot.constants import (
     KALSHI_CATALOGUE_WALL_TIMEOUT,
     MARKET_QUERY_AUTHOR_BACKOFFS,
@@ -649,6 +650,15 @@ def prediction_market_provider(is_benchmarking: bool = False) -> ResearchCallabl
             provider="prediction_market",
             payload=snapshot,
         )
+        if market_anchor.market_anchor_enabled():
+            # FREE_MODE market anchor (metaculus_bot/market_anchor.py): a liquid same-question
+            # price, or None (which clears any stale entry). Never raises into research.
+            try:
+                anchor = market_anchor.select_market_anchor(snapshot)
+            except Exception as exc:  # noqa: BLE001  # the anchor is optional; research must not fail
+                logger.warning("MARKET_ANCHOR: selection failed (%s); no anchor", type(exc).__name__)
+                anchor = None
+            market_anchor.record_anchor(getattr(question, "id_of_question", None), anchor)
         return format_snapshot_for_research(snapshot, qid=getattr(question, "id_of_question", None))
 
     return _fetch
