@@ -286,3 +286,176 @@ def test_workflow_wires_market_context_and_pinned_ids() -> None:
     assert inputs["fb_ids"]["default"] == ""
     assert "--market-context" in text
     assert '--fb-ids "$IN_FB_IDS"' in text
+
+
+# ---------------------------------------------------------------------------------------------
+# Dataset-source questions (acled, dbnomics, fred, wikipedia, yfinance)
+# ---------------------------------------------------------------------------------------------
+
+_RDATES = ["2026-05-20", "2026-06-08", "2026-07-01", "2027-01-01"]
+
+
+def _dq(qid: str, source: str = "yfinance", question: str = "", value: str = "17.2", **kw: object) -> dict:
+    base: dict[str, object] = {
+        "id": qid,
+        "source": source,
+        "question": question or f"Will {qid}'s close on {{resolution_date}} be higher than on {{forecast_due_date}}?",
+        "resolution_criteria": "Resolves on {resolution_date}.",
+        "background": "A company.",
+        "market_info_open_datetime": "N/A",
+        "market_info_close_datetime": "N/A",
+        "market_info_resolution_criteria": "N/A",
+        "url": f"https://example.com/{qid}",
+        "freeze_datetime": "Thu 2026-05-28 1:00 AM BST (UTC+01:00)",
+        "freeze_datetime_value": value,
+        "freeze_datetime_value_explanation": f"The latest close of {qid}.",
+        "source_intro": "Yahoo Finance.",
+        "resolution_dates": list(_RDATES),
+    }
+    base.update(kw)
+    return base
+
+
+def test_pick_resolution_date_is_the_first_after_floor_and_due() -> None:
+    assert fb.pick_resolution_date(_RDATES, due=date(2026, 5, 10), floor=date(2026, 6, 1)) == date(2026, 6, 8)
+    assert fb.pick_resolution_date(_RDATES, due=date(2026, 6, 8), floor=date(2026, 6, 1)) == date(2026, 7, 1)
+    assert fb.pick_resolution_date(["2026-05-01"], due=date(2026, 4, 1), floor=date(2026, 6, 1)) is None
+
+
+def test_join_dataset_one_date_per_question_fills_placeholders_and_never_falls_through() -> None:
+    qset = _qset(
+        "2026-06-07",
+        [_dq("PCG"), _dq("ADBE"), _dq("NOPE"), _q("m1"), _dq(["PCG", "ADBE"])],  # type: ignore[arg-type]
+    )
+    rset = {
+        "forecast_due_date": "2026-06-07",
+        "resolutions": [
+            _r("PCG", "yfinance", "2026-06-08", 1.0),
+            _r("PCG", "yfinance", "2026-07-01", 0.0),
+            _r("ADBE", "yfinance", "2026-06-08", 0.0),
+            # NOPE: its first eligible date (06-08) is unresolved -> skipped, not moved to 07-01
+            _r("NOPE", "yfinance", "2026-06-08", 0.0, resolved=False),
+            _r("NOPE", "yfinance", "2026-07-01", 1.0),
+            _r("m1", "polymarket", "2026-09-01", 1.0),
+        ],
+    }
+    got = {it.fb_id: it for it in fb.join_dataset_binary(qset, rset, resolved_after=date(2026, 6, 1))}
+    assert set(got) == {"PCG", "ADBE"}
+    pcg = got["PCG"]
+    assert pcg.kind == "dataset"
+    assert pcg.resolution_date == date(2026, 6, 8)
+    assert pcg.outcome is True
+    assert "2026-06-08" in pcg.question
+    assert "2026-06-07" in pcg.question
+    assert "{" not in pcg.question
+    assert pcg.market_value is None
+    assert pcg.freeze_value == "17.2"
+    text = fb.freeze_context_text(pcg)
+    assert text is not None
+    assert "The latest close of PCG. Value: 17.2" in text
+    assert "2026-05-28" in text
+    assert fb.freeze_context_text(_item("a", "manifold")) is None
+    # market join ignores dataset rows
+    assert {it.fb_id for it in fb.join_market_binary(qset, rset, resolved_after=date(2026, 6, 1))} == {"m1"}
+
+
+def test_load_dataset_kind_collects_history() -> None:
+    qset = _qset("2026-06-07", [_dq("PCG")])
+    rset = {"forecast_due_date": "2026-06-07", "resolutions": [_r("PCG", "yfinance", "2026-06-08", 1.0)]}
+
+    def fetch(url: str) -> dict | None:
+        if "2026-06-07" not in url:
+            return None
+        return qset if "question_sets" in url else rset
+
+    hist: list[fb.FBResolved] = []
+    items, diag = fb.load_forecastbench(
+        since=date(2026, 6, 1),
+        until=date(2026, 6, 30),
+        resolved_after=date(2026, 6, 1),
+        fetch=fetch,
+        kind="dataset",
+        history=hist,
+    )
+    assert [it.fb_id for it in items] == ["PCG"]
+    assert diag["kind"] == "dataset"
+    assert hist == [fb.FBResolved("PCG", "yfinance", date(2026, 6, 7), date(2026, 6, 8), True)]
+    with pytest.raises(ValueError, match="kind must be"):
+        fb.load_forecastbench(since=date(2026, 6, 1), until=date(2026, 6, 2), resolved_after=date(2026, 6, 1), kind="x")
+
+
+def test_prior_rate_uses_only_rows_known_on_the_due_date() -> None:
+    h = [
+        fb.FBResolved("A", "fred", date(2026, 1, 4), date(2026, 1, 11), True),
+        fb.FBResolved("A", "fred", date(2026, 1, 4), date(2026, 3, 1), False),
+        fb.FBResolved("B", "fred", date(2026, 1, 4), date(2026, 1, 11), False),
+        fb.FBResolved("C", "acled", date(2026, 1, 4), date(2026, 1, 11), True),
+    ]
+    assert fb.prior_rate(h, before=date(2026, 2, 1), source="fred") == pytest.approx((1 + 1) / (2 + 2))
+    assert fb.prior_rate(h, before=date(2026, 4, 1), fb_id="A") == pytest.approx((1 + 1) / (2 + 2))
+    assert fb.prior_rate(h, before=date(2026, 1, 11), source="fred") is None  # resolved ON the due date: unknown
+    assert fb.prior_rate(h, before=date(2026, 4, 1), source="wikipedia") is None
+
+
+def _ditem(source: str, question: str, value: str) -> fb.FBQuestion:
+    return fb.FBQuestion(
+        fb_id="x",
+        source=source,
+        due_date=date(2026, 9, 13),
+        resolution_date=date(2026, 9, 20),
+        outcome=False,
+        question=question,
+        background="",
+        resolution_criteria="",
+        kind="dataset",
+        freeze_value=value,
+    )
+
+
+def test_persistence_probability_rules() -> None:
+    wiki = "According to Wikipedia, will Ju Wenjun have a FIDE ranking on 2026-09-20 as high or higher than their ranking on 2026-09-13?"
+    assert fb.persistence_probability(_ditem("wikipedia", wiki, "3.0")) == fb.PERSISTENCE_YES
+    elo = "According to Wikipedia, will Wei Yi have an Elo rating on 2026-09-20 that's at least 1% higher than on 2026-09-13?"
+    assert fb.persistence_probability(_ditem("wikipedia", elo, "2752")) == fb.PERSISTENCE_NO
+    vac = "According to Wikipedia, will a vaccine have been developed for Pinworm by 2026-09-20?"
+    assert fb.persistence_probability(_ditem("wikipedia", vac, "No")) == fb.PERSISTENCE_NO
+    rec = "According to Wikipedia, will Summer McIntosh still hold the world record for 200m IM on 2026-09-20?"
+    assert fb.persistence_probability(_ditem("wikipedia", rec, "200m IM")) == fb.PERSISTENCE_YES
+    assert fb.persistence_probability(_ditem("yfinance", "Will PCG's close be higher?", "17.2")) == 0.5
+    more = "Will there be more 'Riots' in Ghana for the 30 days before 2026-09-20 compared to the 30-day average?"
+    assert fb.persistence_probability(_ditem("acled", more, "0.0")) == 0.01  # zero rate: clipped floor
+    p = fb.persistence_probability(_ditem("acled", more, "2.0"))
+    assert p == pytest.approx(fb.poisson_sf(2.0, 2.0))
+    assert 0.3 < p < 0.4
+    tenx = "Will there be more than ten times as many 'Protests' in X ... compared to one plus the 30-day average?"
+    assert fb.persistence_probability(_ditem("acled", tenx, "11.25")) == 0.01
+    assert fb.persistence_probability(_ditem("acled", more, "n/a")) == 0.5
+
+
+def test_poisson_sf_and_transforms() -> None:
+    assert fb.poisson_sf(0, 1.0) == pytest.approx(1 - 2.718281828459045**-1)
+    assert fb.poisson_sf(-1, 1.0) == 1.0
+    assert fb.poisson_sf(3, 0.0) == 0.0
+    assert fb.trimmed_mean([0.1, 0.2, 0.9]) == pytest.approx(0.2)
+    assert fb.trimmed_mean([0.1, 0.3]) == pytest.approx(0.2)
+    assert fb.AGGREGATORS["trimmed_mean"] is fb.trimmed_mean
+    assert fb.shrink(0.9, 0.5, 0.25) == pytest.approx(0.8)
+    assert fb.extremize(0.5, 2.0) == pytest.approx(0.5)
+    assert fb.extremize(0.8, 1.0) == pytest.approx(0.8)
+    assert fb.extremize(0.8, 0.5) < 0.8 < fb.extremize(0.8, 1.5)
+
+
+def test_parser_and_workflow_wire_fb_kind() -> None:
+    assert bf._parser().parse_args([]).fb_kind == "market"
+    assert bf._parser().parse_args(["--fb-kind", "dataset"]).fb_kind == "dataset"
+    text = _WF.read_text()
+    inputs = yaml.safe_load(text).get("on", yaml.safe_load(text).get(True))["workflow_dispatch"]["inputs"]
+    assert inputs["fb_kind"]["default"] == "market"
+    assert inputs["fb_kind"]["options"] == ["market", "dataset"]
+    assert '--fb-kind "${IN_FB_KIND:-market}"' in text
+
+
+def test_dataset_binary_question_closes_on_its_resolution_date() -> None:
+    it = _ditem("fred", "Will X have increased by 2026-09-20 as compared to its value on 2026-09-13?", "3.7")
+    q = bf._fb_binary_question(it, 9_000_001)
+    assert q.scheduled_resolution_time.date() == date(2026, 9, 20)
