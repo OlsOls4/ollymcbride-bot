@@ -311,3 +311,78 @@ Live change (`metaculus_bot/market_anchor.py`, wired in `research/prediction_mar
 Also fixed: training-cutoff entries for the swapped-in chain links (glm-5.3-flash,
 nemotron-3-super/ultra, Cloudflare gpt-oss-120b, Groq gpt-oss-20b), which
 `test_live_chain_members_all_have_cutoffs` needed.
+
+## 13 Oct (evening): no-market questions (ForecastBench dataset sources)
+Backtest data: ForecastBench (forecastbench.org), CC BY-SA 4.0
+
+The market anchor cannot help a question with no market, so the ForecastBench source now has
+`--fb-kind dataset` (workflow input `fb_kind`; commits 907bc52, 06712f8, b20eba1, a99c2ae). It
+covers every non-market source in forecastbench-datasets (today: acled, dbnomics, fred,
+wikipedia, yfinance; new sources are picked up automatically). Same rules as the market run:
+keyless raw JSON, resolved questions only, resolution on/after 2026-06-01, sample pool resolved
+on/after 2026-08-15, per-member training-cutoff filter, no Metaculus token, no OpenRouter.
+Each dataset question has several resolution dates; the backtest uses only the FIRST one on/after
+2026-06-01 and after the due date, and skips the question if that date has not resolved (no
+fall-through). The `{forecast_due_date}`/`{resolution_date}` placeholders are filled in, and
+the model's only research is the question's own freeze value plus its explanation, as
+ForecastBench supplies them. Cheap non-LLM baselines (no model calls): the source's YES rate and
+the same series' YES rate from resolutions known on the due date (Laplace-smoothed), and naive
+persistence (ACLED: Poisson with the freeze-value rate held; Wikipedia: 0.9/0.1 when an unchanged
+value resolves YES/NO; prices, yields and temperatures: 0.5).
+
+Run [38414094348](https://github.com/OlsOls4/ollymcbride-bot/actions/runs/38414094348) (42 min,
+zero cost, no Flash): 60 questions, 12 from each source, seed 20261012, from a pool of 772; 23 YES
+and 37 NO. Horizons are 7 days (47 questions, due 16 Aug-27 Sep) and 180 days (13 questions due
+1 Mar, resolved 28 Aug). Members: kimi-k3 60/60, gemini-3.5-flash-lite 53/60,
+gemini-3.1-flash-lite 60/60, Groq gpt-oss-120b 6/20. Groq hit its daily token quota, which is
+shared with the live bot's Groq link. Chains were simulated with the current live chains.
+
+Paired bootstrap 95% CI on Brier (5,000 resamples; dB < 0 is better than the live chain median):
+
+| Variant (n=60 unless noted) | Brier [95% CI] | dB vs chain median |
+|---|---|---|
+| Live chain median | 0.168 [0.134, 0.203] | — |
+| Chain mean | 0.163 [0.131, 0.197] | -0.004 [-0.010, +0.001] |
+| Chain trimmed mean (= median with 4 slots) | 0.168 | 0.000 |
+| Chain median without gpt-oss-120b | 0.157 [0.126, 0.189] | -0.010 [-0.026, +0.001] |
+| Chain median without gemini-3.5-flash-lite | 0.171 | +0.003 [-0.007, +0.013] |
+| All members mean (>=3, n=54) | 0.154 | -0.010 [-0.023, +0.001] |
+| Shrink toward 0.5, w chosen leave-one-out | 0.168 (LOO picks w=0) | 0.000 |
+| Extremize, alpha chosen leave-one-out | 0.170 (LOO picks 0.8-1.0) | +0.002 [+0.000, +0.004] |
+| Shrink toward persistence, LOO w | 0.171 | +0.004 [-0.007, +0.018] |
+| Shrink toward source rate, LOO w | 0.169 | +0.001 [-0.009, +0.011] |
+| Shrink toward series rate, LOO w | 0.166 | -0.002 [-0.012, +0.008] |
+| Baseline: persistence (text + freeze value) | 0.171 [0.136, 0.207] | +0.003 [-0.021, +0.031] |
+| Baseline: source rate (prior) | 0.185 [0.146, 0.225] | +0.017 [-0.022, +0.057] |
+| Baseline: series rate (prior, source-rate fallback) | 0.152 [0.115, 0.193] | -0.015 [-0.055, +0.023] |
+| Baseline: base rate 0.383 (in-sample) | 0.236 [0.209, 0.268] | +0.069 [+0.034, +0.103] |
+| Baseline: always 0.5 | 0.250 | +0.082 [+0.048, +0.117] |
+
+Per source (chain median vs persistence): acled 0.028 vs 0.029 (0 of 12 YES), wikipedia 0.049
+vs 0.077, dbnomics 0.246 vs 0.250, yfinance 0.242 vs 0.250, fred 0.274 vs 0.250 (the series rate
+does 0.182 on FRED).
+
+Findings:
+- With the question's own data point, the chain beats the base rate and always-0.5 beyond
+  noise. It ties naive persistence and the prior series rate. Where the right answer is "no
+  change" (ACLED, Wikipedia) it is already near-perfect; on coin-flip series (prices,
+  temperatures) it is near 0.25, as expected.
+- No candidate beats the current setup beyond noise. LOO chooses no shrinkage (w=0) and
+  near-zero extremizing (alpha 0.8-1.0). Mean vs median, the trimmed mean and dropping a member
+  all have CIs that cross 0. A status-quo prompt nudge was not dispatched: persistence ties the
+  chain, and shrinking toward it does not help (+0.004), so there was no single candidate worth
+  the one extra run.
+- Re-check on the earlier 60 market-source questions (current live chains): the transforms
+  chosen above change nothing there either. Shrink w=0 is the identity. Extremize 0.9 gives
+  -0.002 [-0.006, +0.001] with no research and -0.004 [-0.009, -0.000] with the market in the
+  prompt.
+- Chain mean is the most consistent direction across the three runs: dataset -0.004 [-0.010,
+  +0.001], market no-research -0.004 [-0.017, +0.007], market-in-prompt -0.020 [-0.041, -0.003].
+  It is not beyond noise on the no-market questions, so it is not shipped. Caveat: with only 4
+  backtest members, the simulated chains repeat one member in several slots (gpt-oss-120b or
+  gemini-3.5-flash-lite), so median vs mean is measured on an ensemble less diverse than the
+  live one.
+
+Live change: none. Questions without a market anchor are forecast exactly as before (chain
+median, no transform). Analysis script: `nomarket_analysis.py` in the Hark project workspace (not
+committed).
