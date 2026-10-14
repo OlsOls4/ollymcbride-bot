@@ -11,6 +11,13 @@ slug `market-pulse-26q4`) in FREE_MODE, at zero cost. Workflow: `.github/workflo
 - **Spot scoring**: only the forecast standing at each subquestion's close counts. Bots must keep
   updating their forecasts during each question's lifetime.
 
+## Quota policy (14 Oct 2026)
+
+Only the forecast standing at close is scored, so a daily refresh mostly spends free quota on
+forecasts that never count. The routine refresh is every ~72 h (a fallback in case the closing
+runs fail), and updates are concentrated in the final 24 h (every ~6 h), so the scored forecast is
+the freshest one. This roughly halves Market Pulse model calls.
+
 ## What the mode does
 
 Unlike the other tournament modes (which pin `skip_previously_forecasted_questions=True` and never
@@ -19,14 +26,14 @@ update), Market Pulse re-forecasts on an automated, **rules-based clock**:
 | Situation (per subquestion) | Action |
 | --- | --- |
 | never forecast, or the standing forecast was withdrawn | forecast |
-| closes within ~36 h and the last forecast is more than ~6 h old | re-forecast |
-| last forecast more than ~24 h old | re-forecast |
+| closes within ~24 h and the last forecast is more than ~6 h old | re-forecast |
+| last forecast more than ~72 h old | re-forecast (fallback) |
 | anything else | leave it standing |
 
 - The age comes from `my_forecasts` in the Metaculus API payload (`latest.start_time`, falling back
   to `history`). The decision reads only timestamps and close times. It **never** looks at a
   forecast's value or comment.
-- Both age thresholds carry a 30-minute schedule slack (23.5 h and 5.5 h), because a forecast
+- Both age thresholds carry a 30-minute schedule slack (71.5 h and 5.5 h), because a forecast
   is published some minutes after its run starts. Without the slack the next 6-hourly run would
   just miss a strict threshold.
 - Group questions are unpacked into subquestions by forecasting-tools
@@ -38,8 +45,8 @@ update), Market Pulse re-forecasts on an automated, **rules-based clock**:
   so an API change can never turn into re-publishing everything on every run.
 - **Priority and cap**: updates for questions closing soon come first, then never-forecast
   questions (earliest close first), then stale ones (oldest first). A run takes at most
-  `MARKET_PULSE_MAX_QUESTIONS_PER_RUN` questions (default 20; at a 24 h refresh, ~65 subquestions
-  need ~17 per run). The rest stay due for the next run (`MARKET_PULSE_CAPPED`).
+  `MARKET_PULSE_MAX_QUESTIONS_PER_RUN` questions (default 20; at a 72 h refresh, ~65 subquestions
+  need ~6 per run). The rest stay due for the next run (`MARKET_PULSE_CAPPED`).
 - **Rate limits**: research fan-out is 2 (the default is 6), and the FREE_MODE chains keep their
   own pacing and fallbacks.
 - Every forecast posts a fresh comment with that run's reasoning, the same publish path as every
