@@ -6,14 +6,17 @@ tournament modes pin ``skip_previously_forecasted_questions`` on and never updat
 instead re-forecasts on a fixed, rules-based clock read from the API payload's ``my_forecasts``:
 
 - never forecast (or the standing forecast was withdrawn)          -> forecast now
-- closes within ~36 h and the last forecast is more than ~6 h old  -> re-forecast
-- the last forecast is more than ~24 h old                         -> re-forecast
+- closes within ~24 h and the last forecast is more than ~6 h old  -> re-forecast
+- the last forecast is more than ~72 h old                         -> re-forecast (fallback)
 - otherwise                                                         -> leave it standing
 
 The decision reads ONLY timestamps (forecast age, close time). It never looks at a forecast's
 value or comment, so an update is never triggered by judging the bot's own content.
 
-Both age thresholds sit ``MARKET_PULSE_SCHEDULE_SLACK`` under the nominal 24 h / 6 h: the
+Because only the forecast standing at close is scored, routine refreshes are spaced out (72 h) to
+save free-tier quota, and the updates are concentrated in the final 24 h before close.
+
+Both age thresholds sit ``MARKET_PULSE_SCHEDULE_SLACK`` under the nominal 72 h / 6 h: the
 workflow fires every 6 h and a forecast is published some minutes after its run starts, so a
 strict 6 h threshold would be missed by the next run and slip to 12 h. The slack absorbs that
 offset (the workflow's backup cron entry covers a run that published late).
@@ -38,14 +41,14 @@ from forecasting_tools.data_models.questions import QuestionState
 logger = logging.getLogger(__name__)
 
 # Nominal thresholds from the Market Pulse update rules (docs/market-pulse.md).
-MARKET_PULSE_STALE_AFTER: timedelta = timedelta(hours=24)
-MARKET_PULSE_CLOSING_WINDOW: timedelta = timedelta(hours=36)
+MARKET_PULSE_STALE_AFTER: timedelta = timedelta(hours=72)
+MARKET_PULSE_CLOSING_WINDOW: timedelta = timedelta(hours=24)
 MARKET_PULSE_CLOSING_STALE_AFTER: timedelta = timedelta(hours=6)
 # Subtracted from both age thresholds so a 6-hourly schedule actually meets them (module docstring).
 MARKET_PULSE_SCHEDULE_SLACK: timedelta = timedelta(minutes=30)
 
 # Per-run cap, so one run stays inside free-tier rate limits and the job's time cap. 65
-# subquestions at a 24 h refresh need ~17 per 6-hourly run; 20 leaves room for closing updates.
+# subquestions at a 72 h refresh need ~6 per 6-hourly run; 20 leaves room for new and closing updates.
 MARKET_PULSE_MAX_QUESTIONS_PER_RUN_ENV: str = "MARKET_PULSE_MAX_QUESTIONS_PER_RUN"
 MARKET_PULSE_DEFAULT_MAX_QUESTIONS_PER_RUN: int = 20
 # Research fan-out for this mode: lower than the default 6, to spread free-tier calls out.
