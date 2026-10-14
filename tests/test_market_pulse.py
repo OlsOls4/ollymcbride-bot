@@ -6,7 +6,7 @@ Expected classification at that instant:
 
 - 60001 never forecast                                     -> new
 - 60002 closes in 20 h, last forecast 8 h ago              -> closing
-- 60003 last forecast 30 h ago                             -> stale
+- 60003 last forecast 80 h ago                             -> stale
 - 60004 last forecast 2 h ago                              -> fresh
 - 60005 subquestion status "upcoming"                      -> filtered out by forecasting-tools
 - 60011 standing forecast withdrawn (end_time passed)      -> new
@@ -107,7 +107,7 @@ class TestFrameworkExpandsGroups:
         now = _now()
         assert last_forecast_time(by_qid[60001], now) is None
         assert by_qid[60002].already_forecasted is True
-        assert now - last_forecast_time(by_qid[60003], now) == timedelta(hours=30)
+        assert now - last_forecast_time(by_qid[60003], now) == timedelta(hours=80)
 
 
 class TestRefreshClock:
@@ -119,13 +119,13 @@ class TestRefreshClock:
         by_qid = _by_qid(_fetch_open_questions()[0])
         assert classify_for_refresh(by_qid[qid], _now())[0] == expected
 
-    def test_thresholds_are_about_24h_and_6h(self) -> None:
+    def test_thresholds_are_about_72h_and_6h(self) -> None:
         question = _by_qid(_fetch_open_questions()[0])[60003]
         last = last_forecast_time(question, _now())
         assert last is not None
-        # 60003 closes in 26 days: only the 24 h rule applies.
-        assert classify_for_refresh(question, last + timedelta(hours=20))[0] == "fresh"
-        assert classify_for_refresh(question, last + timedelta(hours=24))[0] == "stale"
+        # 60003 closes in 26 days: only the 72 h rule applies.
+        assert classify_for_refresh(question, last + timedelta(hours=70))[0] == "fresh"
+        assert classify_for_refresh(question, last + timedelta(hours=72))[0] == "stale"
         closing = _by_qid(_fetch_open_questions()[0])[60002]
         closing_last = last_forecast_time(closing, _now())
         assert closing_last is not None
