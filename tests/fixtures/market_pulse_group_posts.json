@@ -106,12 +106,12 @@
       "my_forecasts": {
        "history": [
         {
-         "start_time": 1793512800.0,
+         "start_time": 1793332800.0,
          "end_time": null
         }
        ],
        "latest": {
-        "start_time": 1793512800.0,
+        "start_time": 1793332800.0,
         "end_time": null
        }
       },
