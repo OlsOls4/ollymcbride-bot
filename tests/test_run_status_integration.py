@@ -343,3 +343,65 @@ async def test_predictit_http_200_wrong_shape_is_visible_from_real_source_token(
             "http_status": None,
         }
     ]
+
+
+def _mock_model_timeout_census(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(forecast_cli, "credit_alerts_active", lambda: True)
+    monkeypatch.setattr(forecast_cli, "get_generic_key_fallback_count", lambda: 0)
+    monkeypatch.setattr(forecast_cli, "get_donated_404_fallback_count", lambda: 0)
+    monkeypatch.setattr(forecast_cli, "get_credit_key_fallback_count", lambda: 0)
+    monkeypatch.setattr(forecast_cli, "get_post_drop_count", lambda: 0)
+    monkeypatch.setattr(forecast_cli, "get_probed_donated_key_state", lambda: None)
+    monkeypatch.setattr(forecast_cli, "has_deprecation_alerts", lambda: False)
+    monkeypatch.setattr(forecast_cli, "check_deprecation_alerts_and_exit", lambda: None)
+
+
+def _report(template_bot: MagicMock) -> None:
+    forecast_cli._report_degradation_and_exit(
+        template_bot,
+        report_summary_error=None,
+        donated_below_floor=False,
+        fall_cup_reminder=False,
+        mantic_tournament_stale=False,
+    )
+
+
+def test_degraded_but_fully_published_run_stays_green_when_opted_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    RUN_STATUS.reset(stage="runtime")
+    _record_successful_model_and_publication_counts()
+    RUN_STATUS.record_model_drop("timeout_wall_clock")
+    _mock_model_timeout_census(monkeypatch)
+    monkeypatch.setenv("DEGRADED_PUBLISHED_EXIT_ZERO", "true")
+    _report(MagicMock(spec=TemplateForecaster, alertable_count=1))
+    assert RUN_STATUS.payload()["outcome"] == "degraded"
+
+
+def test_degraded_run_stays_red_without_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    RUN_STATUS.reset(stage="runtime")
+    _record_successful_model_and_publication_counts()
+    _mock_model_timeout_census(monkeypatch)
+    monkeypatch.delenv("DEGRADED_PUBLISHED_EXIT_ZERO", raising=False)
+    with pytest.raises(SystemExit) as exit_info:
+        _report(MagicMock(spec=TemplateForecaster, alertable_count=1))
+    assert exit_info.value.code == 1
+
+
+def test_publish_failure_stays_red_even_when_opted_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    RUN_STATUS.reset(stage="runtime")
+    _record_successful_model_and_publication_counts()
+    RUN_STATUS.record_publish_attempt("forecasts")
+    RUN_STATUS.record_publish_failure("forecasts", error_type="publish_failure")
+    _mock_model_timeout_census(monkeypatch)
+    monkeypatch.setenv("DEGRADED_PUBLISHED_EXIT_ZERO", "true")
+    with pytest.raises(SystemExit) as exit_info:
+        _report(MagicMock(spec=TemplateForecaster, alertable_count=1))
+    assert exit_info.value.code == 1
+
+
+def test_nothing_published_stays_red_even_when_opted_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    RUN_STATUS.reset(stage="runtime")
+    _mock_model_timeout_census(monkeypatch)
+    monkeypatch.setenv("DEGRADED_PUBLISHED_EXIT_ZERO", "true")
+    with pytest.raises(SystemExit) as exit_info:
+        _report(MagicMock(spec=TemplateForecaster, alertable_count=1))
+    assert exit_info.value.code == 1
