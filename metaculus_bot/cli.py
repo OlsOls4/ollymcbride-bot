@@ -621,6 +621,30 @@ def _record_run_outcome(report_summary_error: Exception | None, run_clean: bool)
         RUN_STATUS.set_outcome("clean" if run_clean else "degraded")
 
 
+DEGRADED_EXIT_ZERO_ENV = "DEGRADED_PUBLISHED_EXIT_ZERO"
+
+
+def _degraded_exit_zero_enabled() -> bool:
+    """Opt-in: a degraded run whose forecasts and comments all published exits zero."""
+    return os.environ.get(DEGRADED_EXIT_ZERO_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _exit_for_alertable(breakdown: str) -> None:
+    """Exit red for an alertable run, unless the opt-in green-on-published rule applies."""
+    if _degraded_exit_zero_enabled() and RUN_STATUS.publication_fully_succeeded():
+        # FREE_MODE: free-tier model timeouts are routine, and every question still published with
+        # its comment, so a red check (and GitHub's "Run failed" email) would be noise. The
+        # degradation stays in the breakdown line, the status JSON and the job summary's warning.
+        logger.warning(
+            "%s every forecast and comment published, and %s is on, so this run stays green.",
+            breakdown,
+            DEGRADED_EXIT_ZERO_ENV,
+        )
+        return
+    logger.warning("%s exiting non-zero so CI marks this run red.", breakdown)
+    sys.exit(1)
+
+
 def _report_degradation_and_exit(
     template_bot: TemplateForecaster,
     *,
@@ -695,8 +719,7 @@ def _report_degradation_and_exit(
         logger.warning("%s re-raising the forecasting failure so CI marks this run red.", breakdown)
         raise report_summary_error
     if alertable > 0:
-        logger.warning("%s exiting non-zero so CI marks this run red.", breakdown)
-        sys.exit(1)
+        _exit_for_alertable(breakdown)
     if generic_fallback > 0:
         # Reachable only under suppression with every fallback credit-caused, so the line says so.
         logger.info("%s every fallback was a suppressed credit event, so this run stays green.", breakdown)
