@@ -484,6 +484,19 @@ class RunStatus:
             )
             self._failures[signature] += 1
 
+    def publication_fully_succeeded(self) -> bool:
+        """True when this run published at least one forecast and every forecast and comment it
+        attempted succeeded, with no publish-gate or publishing cause recorded (a question that
+        never reached publish because too few models survived is a publish-gate cause)."""
+        with self._lock:
+            kinds: tuple[PublishKind, ...] = ("forecasts", "comments")
+            for kind in kinds:
+                attempted = self._publish_attempted[kind]
+                if attempted <= 0 or self._publish_succeeded[kind] != attempted or self._publish_failed[kind]:
+                    return False
+            blocked = {_safe_component("publish_gate"), _safe_component("publishing")}
+            return not any(key[0] in blocked and count for key, count in self._failures.items())
+
     def payload(self) -> RunStatusPayload:
         with self._lock:
             causes: list[RunCause] = [
