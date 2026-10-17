@@ -104,6 +104,9 @@ jobs:
           # secrets, set FREE_MODE to 'false' and restore upstream's flag block from
           # No-Stream/nostreambot-metaculus-bot (same file); nothing else changes.
           FREE_MODE: 'true'
+          # Degraded runs (a free model timed out) that still published every forecast and comment
+          # exit green, so GitHub stops emailing 'Run failed'. Publish failures and crashes stay red.
+          DEGRADED_PUBLISHED_EXIT_ZERO: 'true'
           # Ensemble slots (median of the survivors; stacking stays off). Max 5.
           FREE_MODE_ENSEMBLE_SIZE: '4'
           # Market Pulse per-run cap (market_pulse.py): most-urgent first, the rest wait for the next run.
