@@ -53,6 +53,7 @@ from metaculus_bot.constants import (
     TS_ANCHOR_TIMEOUT,
     env_flag_enabled,
 )
+from metaculus_bot.research import timestral_prior
 from metaculus_bot.research.providers import ResearchCallable
 from metaculus_bot.research.ts_estimators import (
     _empirical_change_band,
@@ -330,6 +331,9 @@ def _build_single_anchor_section(
     # (forecaster.py `_pull_research_chart`), defeating the backstop. Success-only also
     # skips a wasted matplotlib render on rejects.
     _maybe_stash_single_chart(series, route=route, question=question, as_of=as_of, calendar_days=calendar_days)
+    scheduled = getattr(question, "scheduled_resolution_time", None)
+    if isinstance(scheduled, datetime):
+        timestral_prior.stage(question.id_of_question, series, route=route, scheduled_date=scheduled.date())
     return _truncate_section(text)
 
 
@@ -383,6 +387,8 @@ def timeseries_anchor_provider(is_benchmarking: bool = False) -> ResearchCallabl
 
         if cache_key is not None:
             _SECTION_CACHE[cache_key] = section
+        if section and timestral_prior.enabled():
+            await timestral_prior.compute(qid)  # own timeout; never raises
         return section
 
     return _fetch
