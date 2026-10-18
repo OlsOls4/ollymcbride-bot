@@ -386,3 +386,30 @@ Findings:
 Live change: none. Questions without a market anchor are forecast exactly as before (chain
 median, no transform). Analysis script: `nomarket_analysis.py` in the Hark project workspace (not
 committed).
+
+## 18 Oct: Timestral prior (time-series model blend)
+
+Mistral's Timestral-28M (Apache-2.0, released 15 Oct 2026; CPU, no API key, zero quota) runs in
+the GitHub runner. Code: `metaculus_bot/research/timestral_prior.py`; switch: `TIMESTRAL_PRIOR_ENABLED`
+(`'true'` in the tournament, MiniBench, Metaculus Cup, Market Pulse and Test Bot workflows; off when unset).
+torch + timestral are installed by a continue-on-error workflow step (not in the lockfile).
+
+Evidence (resolved questions only; Backtest data: ForecastBench (forecastbench.org), CC BY-SA 4.0):
+- Offline study, 2,892 resolved "will the series rise" questions (FRED / yfinance / dbnomics), history cut
+  before each due date: Timestral 0.207 Brier vs always-50% 0.250 vs empirical rise rate 0.243.
+  Strong on temperatures (0.143), small on FRED (0.227), none on stocks (0.248). Caveat: Timestral's
+  post-training may overlap 2026 data, so treat the size of the edge as optimistic.
+- Head-to-head, run 39127193293 (60 resolved questions, 20 per source, `--fb-extra-preds`): chain median
+  0.235, Timestral 0.215, 0.7 Timestral blend 0.214, 0.3 Timestral blend 0.222. Only the 0.3 blend beat
+  the chain beyond its paired 95% CI: dBrier -0.013 [-0.024, -0.002]. Hence weight 0.3.
+
+Scope and guards (all fail open to the unchanged ensemble): numeric questions only; routed by the
+time-series anchor to one series (no spreads), derivation `level`, scale 1, not a forward-max question,
+and only after the anchor section passed its band and bounds guards. Horizon = native steps from the last
+observation to the scheduled resolution date. Published CDF = 0.7 x ensemble + 0.3 x Timestral
+(renormalised onto closed bounds, ensemble's open-tail mass kept), then the min-step sweep; a mixture that
+breaks the server's step rules, or a Timestral forecast with <5% mass inside the bounds, drops the blend.
+The comment states the Timestral median and 10-90% range and the 70/30 weights.
+
+Not yet measured: the numeric (CDF) blend on resolved Metaculus questions, which the API does not expose
+to our tokens. Re-check once the bot's own series-tied MiniBench questions resolve.
