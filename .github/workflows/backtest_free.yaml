@@ -57,6 +57,9 @@ on:
       fb_ids:
         description: "ForecastBench: pin the sample to 'id_prefix@due_date,...' (empty = seeded sample)"
         default: ""
+      fb_extra_preds:
+        description: "ForecastBench: URL of precomputed {name: {fb_id: p}} JSON, scored as extra variants + chain blends"
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}
@@ -177,11 +180,13 @@ jobs:
           IN_MARKET_CONTEXT: ${{ inputs.market_context }}
           IN_FB_KIND: ${{ inputs.fb_kind }}
           IN_FB_IDS: ${{ inputs.fb_ids }}
+          IN_FB_EXTRA_PREDS: ${{ inputs.fb_extra_preds }}
         run: |
           mkdir -p backtests
           extra=()
           if [ "$IN_MARKET_CONTEXT" = "true" ]; then extra+=(--market-context); fi
           if [ -n "$IN_FB_IDS" ]; then extra+=(--fb-ids "$IN_FB_IDS"); fi
+          if [ -n "$IN_FB_EXTRA_PREDS" ]; then extra+=(--fb-extra-preds "$IN_FB_EXTRA_PREDS"); fi
           uv run --frozen --no-dev python backtest_free.py "${extra[@]}" \
             --source "${IN_SOURCE:-forecastbench}" \
             --fb-kind "${IN_FB_KIND:-market}" \
