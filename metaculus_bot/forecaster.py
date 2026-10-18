@@ -6,6 +6,7 @@ from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import numpy as np
 from forecasting_tools import (
     BinaryQuestion,
     GeneralLlm,
@@ -13,6 +14,7 @@ from forecasting_tools import (
     MultipleChoiceQuestion,
     NumericDistribution,
     NumericQuestion,
+    Percentile,
     PredictedOptionList,
     ReasonedPrediction,
 )
@@ -70,9 +72,14 @@ from metaculus_bot.forecaster_runners import (
 )
 from metaculus_bot.llm_setup import prepare_llm_config
 from metaculus_bot.member_forecast import NUMERIC_COMBINE_METHOD_UNRECORDED, format_numeric_aggregate_marker
+from metaculus_bot.numeric.config import grid_step_constraints
 from metaculus_bot.numeric.date_axis import numeric_qtype, numeric_view
 from metaculus_bot.numeric.out_of_range_floor import floor_published_tails
-from metaculus_bot.numeric.pchip_processing import log_pchip_summary, reset_pchip_stats
+from metaculus_bot.numeric.pchip_processing import (
+    create_pchip_numeric_distribution,
+    log_pchip_summary,
+    reset_pchip_stats,
+)
 from metaculus_bot.performance_analysis.parsing import extract_model_display_name_from_reasoning
 from metaculus_bot.publish_gate import (
     publish_skipped_closed_count,
@@ -81,6 +88,7 @@ from metaculus_bot.publish_gate import (
 )
 from metaculus_bot.publish_hardening import publish_attempt_failures, reset_publish_attempt_failures
 from metaculus_bot.question_platform import question_platform
+from metaculus_bot.research import timestral_prior
 from metaculus_bot.research.orchestrator import ResearchOrchestrator
 from metaculus_bot.research.providers import (
     ResearchCallable,
@@ -938,6 +946,7 @@ class TemplateForecaster(CompactLoggingForecastBot):
             aggregated = self._pipeline.simple_combine(predictions, question)
         # The one seam every aggregation path returns through, so the tail floor and marker see the published CDF.
         if isinstance(aggregated, NumericDistribution):
+            aggregated = self._apply_timestral_prior(aggregated, question)
             floored = floor_published_tails(aggregated, question)
             method = NUMERIC_COMBINE_METHOD_UNRECORDED
             if question.id_of_question is not None:
@@ -955,6 +964,65 @@ class TemplateForecaster(CompactLoggingForecastBot):
             )
             return floored.distribution
         return self._apply_market_anchor(aggregated, question)
+
+    def _apply_timestral_prior(
+        self, aggregated: NumericDistribution, question: MetaculusQuestion
+    ) -> NumericDistribution:
+        """FREE_MODE: blend 30% of the Timestral time-series forecast into a series-tied numeric CDF.
+
+        The prior is recorded by the time-series-anchor research provider (research/timestral_prior.py)
+        and popped here once. No prior, a date question, or any failure: the aggregate is unchanged.
+        """
+        qid = getattr(question, "id_of_question", None)
+        prior = timestral_prior.pop_prior(qid)
+        if prior is None or not timestral_prior.enabled() or not isinstance(question, NumericQuestion):
+            return aggregated
+        if type(question).__name__ != "NumericQuestion":  # numeric only: no date/discrete subclasses
+            return aggregated
+        try:
+            heights = aggregated.get_cdf()
+            x = np.fromiter((float(p.value) for p in heights), dtype=float, count=len(heights))
+            ens = np.fromiter((float(p.percentile) for p in heights), dtype=float, count=len(heights))
+            min_step, max_step = grid_step_constraints(ens.size)
+            mix = timestral_prior.blend_cdf(
+                ens,
+                x,
+                prior,
+                open_lower=bool(aggregated.open_lower_bound),
+                open_upper=bool(aggregated.open_upper_bound),
+                min_step=min_step,
+                max_step=max_step,
+            )
+            if mix is None:
+                logger.info("TIMESTRAL_PRIOR: question=%s blend not server-legal; unchanged", qid)
+                return aggregated
+            declared = [Percentile(percentile=float(c), value=float(v)) for c, v in zip(mix, x, strict=True)]
+            blended = create_pchip_numeric_distribution(
+                pchip_cdf=[float(c) for c in mix],
+                percentile_list=declared,
+                question=numeric_view(question),
+                zero_point=aggregated.zero_point,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail open to the ensemble
+            logger.warning(
+                "TIMESTRAL_PRIOR: question=%s blend failed (%s: %s); unchanged", qid, type(exc).__name__, exc
+            )
+            return aggregated
+        i50_e = float(np.interp(0.5, ens, x))
+        i50_m = float(np.interp(0.5, mix, x))
+        logger.info(
+            "TIMESTRAL_PRIOR: question=%s series=%s weight=%.2f median ensemble=%.6g published=%.6g",
+            qid,
+            prior.label,
+            timestral_prior.TIMESTRAL_PRIOR_WEIGHT,
+            i50_e,
+            i50_m,
+        )
+        if qid is not None:
+            note = timestral_prior.format_note(prior)
+            prev = self._market_anchor_notes.get(qid)
+            self._market_anchor_notes[qid] = f"{prev}\n\n{note}" if prev else note
+        return blended
 
     def _apply_market_anchor(self, aggregated: PredictionTypes, question: MetaculusQuestion) -> PredictionTypes:
         """FREE_MODE: blend a binary aggregate toward the liquid same-question market price, if any.
