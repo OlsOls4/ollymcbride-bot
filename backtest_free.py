@@ -951,6 +951,22 @@ async def run_forecastbench(args: argparse.Namespace) -> dict[str, Any]:  # noqa
                 {q: blend_toward_market(p, market_of[q], w) for q, p in chain_med.preds.items() if q in market_of},
             )
         )
+    if args.fb_extra_preds:
+        # Offline, precomputed non-LLM forecasts (e.g. a time-series model run on history cut before
+        # each due date), keyed by ForecastBench id: scored as variants and blended with the chain.
+        extra = fb.fetch_json(args.fb_extra_preds) or {}
+        for name, preds_in in extra.items():
+            ext = {q: float(p) for q, p in (preds_in or {}).items() if q in outcomes}
+            if not ext:
+                continue
+            variants.append(fb.BinaryVariant(f"extra:{name}", ext))
+            for w in (0.3, 0.5, 0.7):
+                variants.append(
+                    fb.BinaryVariant(
+                        f"blend:{w:.1f}*{name}+{1 - w:.1f}*chain_median",
+                        {q: w * ext[q] + (1 - w) * p for q, p in chain_med.preds.items() if q in ext},
+                    )
+                )
     base_rate = statistics.fmean(1.0 if o else 0.0 for o in outcomes.values())
     if kind == "dataset":
         # Cheap non-LLM baselines (no model calls), all from data known on the due date.
@@ -1143,6 +1159,11 @@ def _parser() -> argparse.ArgumentParser:
         "--fb-ids",
         default="",
         help="ForecastBench: pin the sample to 'id_prefix@due_date,...' (an earlier run's questions)",
+    )
+    p.add_argument(
+        "--fb-extra-preds",
+        default="",
+        help="ForecastBench: URL of JSON {name: {fb_id: probability}} scored as extra variants + chain blends",
     )
     return p
 
