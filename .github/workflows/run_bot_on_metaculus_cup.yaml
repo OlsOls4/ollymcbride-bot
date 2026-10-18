@@ -47,6 +47,14 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 10
         run: uv sync --no-dev --frozen
+      - name: Install Timestral time-series model (CPU, optional)
+        # Timestral prior (metaculus_bot/research/timestral_prior.py): not in the lockfile, so it
+        # is installed here. continue-on-error: a failure just means no prior (fails open).
+        continue-on-error: true
+        timeout-minutes: 6
+        run: |
+          uv pip install --exclude-newer 2026-10-18T00:00:00Z --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match "torch==2.14.1+cpu" "timestral @ git+https://github.com/mistralai/timestral.git@a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff"
+          uv run --frozen --no-dev python -c "from timestral import TimestralForecaster as T; T.from_pretrained('mistralai/Timestral-28M'); print('timestral ok')"
       # Chromium for gap-fill v2's rendered-fetch rung (playwright). --with-deps
       # pulls the system libraries chromium needs on ubuntu runners. The loop
       # degrades to plain fetch if the browser is missing, so this step is
@@ -125,6 +133,8 @@ jobs:
           RESOLUTION_SOURCE_ENABLED: 'true'
           FINANCIAL_DATA_ENABLED: 'true'
           TS_ANCHOR_ENABLED: 'true'
+          # Timestral prior: 30% time-series model blend on series-tied numeric questions ('false' = off).
+          TIMESTRAL_PRIOR_ENABLED: 'true'
           # Gemini grounded search: Google Search grounding is free ONLY on gemini-2.5-flash /
           # -flash-lite (500 RPD); every Gemini 3.x model has no free grounding, and 2.5 is
           # reported closed to newly created keys. Set BOTH to 'true' only after confirming the
