@@ -449,6 +449,11 @@ class TestEveryBotWorkflowRunsInFreeMode:
     @pytest.mark.parametrize("rel_path", _BOT_WORKFLOWS)
     def test_no_paid_secret_is_wired(self, rel_path: str) -> None:
         raw = (_REPO_ROOT / rel_path).read_text()
+        # The one exception (Olly, 2026-10-29): his FREE OpenAI credits, passed ONLY as
+        # OPENAI_CAPPED_API_KEY to the hard-capped link (metaculus_bot/openai_budget.py).
+        capped = "OPENAI_CAPPED_API_KEY: ${{ secrets.OPENAI_API_KEY }}"
+        assert raw.count("secrets.OPENAI_API_KEY") == raw.count(capped), f"{rel_path} wires OPENAI_API_KEY uncapped"
+        raw = raw.replace(capped, "")
         for secret in self._PAID_SECRETS:
             assert f"secrets.{secret}" not in raw, f"{rel_path} wires the paid secret {secret}"
 
