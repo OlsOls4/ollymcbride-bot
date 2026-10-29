@@ -77,6 +77,7 @@ from metaculus_bot.constants import (
 )
 from metaculus_bot.credit_telemetry import DIRECT_KEY_ALIAS, PERSONAL_KEY_ALIAS, llm_call_metadata
 from metaculus_bot.llm_retry import llm_status_code
+from metaculus_bot.openai_budget import build_capped_openai_link, capped_openai_configured
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -515,19 +516,41 @@ def build_free_chain(
     return FreeModelChainLlm(links, role=role, annotate_fallback=annotate_fallback, budget_s=budget_s)
 
 
+# Slot (0-based) whose chain gets the hard-capped OpenAI link in front when it is opted in
+# (metaculus_bot/openai_budget.py). Slot 4's primary, NIM glm-5.3, is the one that times out most.
+FREE_MODE_OPENAI_SLOT: int = 3
+
+
 def build_free_forecaster_llms() -> list[GeneralLlm]:
-    """The FREE_MODE ensemble: ``free_mode_ensemble_size()`` slots, one fallback chain each."""
-    return [
-        build_free_chain(
+    """The FREE_MODE ensemble: ``free_mode_ensemble_size()`` slots, one fallback chain each.
+
+    When the capped OpenAI link is opted in (Olly's free OpenAI credits, approved 2026-10-29), it
+    leads slot ``FREE_MODE_OPENAI_SLOT``; the rest of that chain is unchanged and answers whenever
+    the budget declines or OpenAI fails.
+    """
+    slots = FREE_MODE_FORECASTER_CHAINS[: free_mode_ensemble_size()]
+    openai_slot = min(FREE_MODE_OPENAI_SLOT, len(slots) - 1) if capped_openai_configured() else -1
+    llms: list[GeneralLlm] = []
+    for slot, chain in enumerate(slots):
+        role = f"forecaster:free{slot + 1}"
+        llm = build_free_chain(
             chain,
-            role=f"forecaster:free{slot + 1}",
+            role=role,
             timeout=FREE_MODE_FORECASTER_LINK_TIMEOUT_S,
             max_tokens=FREE_MODE_FORECASTER_MAX_TOKENS,
             annotate_fallback=True,
             budget_s=FREE_MODE_FORECASTER_CHAIN_BUDGET_S,
         )
-        for slot, chain in enumerate(FREE_MODE_FORECASTER_CHAINS[: free_mode_ensemble_size()])
-    ]
+        if slot == openai_slot:
+            llm = FreeModelChainLlm(
+                [build_capped_openai_link(role=role), *llm.links],
+                role=role,
+                annotate_fallback=True,
+                budget_s=FREE_MODE_FORECASTER_CHAIN_BUDGET_S,
+            )
+            logger.info("OPENAI_BUDGET: capped OpenAI link leads forecaster slot %d", slot + 1)
+        llms.append(llm)
+    return llms
 
 
 def build_free_utility_llm(
