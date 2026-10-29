@@ -360,7 +360,7 @@ class CappedOpenAILink(GeneralLlm):
         except Exception as exc:  # HARNESS-SCAN-EXEMPT-broad-except  # classify, then re-raise
             status = llm_status_code(exc)
             msg = str(exc).lower()
-            if status in (401, 402, 403, 429) or any(cue in msg for cue in _DISABLING_CUES):
+            if status in (400, 401, 402, 403, 404, 429) or any(cue in msg for cue in _DISABLING_CUES):
                 budget.disable(f"provider refused (status={status})")
             raise
         finally:
