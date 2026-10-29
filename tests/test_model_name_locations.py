@@ -25,6 +25,7 @@ _ALLOWED_FILES: frozenset[str] = frozenset(
     {
         "metaculus_bot/llm_configs.py",  # forecaster roster + every support-model GeneralLlm
         "metaculus_bot/constants.py",  # bare ids for native-SDK callers that build no GeneralLlm
+        "metaculus_bot/openai_budget.py",  # the one hard-capped OpenAI model (free credits, 2026-10-29)
         "metaculus_bot/fallback_openrouter.py",  # DONATED_KEY_BLOCKED_GOOGLE_MODELS routing blocklist
         "metaculus_bot/ablation/cli_args.py",  # --gemini-model default, offline harness only
         "metaculus_bot/ablation/forecaster_lineup.py",  # prod-mirror + free-tier ablation lineups
