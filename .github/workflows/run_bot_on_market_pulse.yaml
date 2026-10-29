@@ -21,6 +21,11 @@ concurrency:
 # Six-hourly Market Pulse forecast/update job (FREE_MODE, zero cost)
 jobs:
   forecast_job:
+    # contents: write is only for pushing the OpenAI spend ledger (branch openai-ledger). The
+    # checkout below does not persist the token, so the bot process never sees it.
+    permissions:
+      contents: write
+      actions: read
     outputs:
       title: ${{ steps.run_summary.outputs.title }}
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
@@ -45,6 +50,8 @@ jobs:
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
         timeout-minutes: 5
       - uses: astral-sh/setup-uv@v7
         timeout-minutes: 5
@@ -82,6 +89,14 @@ jobs:
         # No cap: a bash echo with no network and no subprocess cannot hang.
         if: steps.playwright_install.outcome == 'failure'
         run: echo "::warning title=Playwright install failed::Chromium install failed — gap-fill v2 rendered-fetch rung will degrade to plain fetch this run. Transient apt/CDN blips are common; investigate only if this recurs."
+      - name: Load OpenAI spend ledger
+        # Hard-capped OpenAI link (metaculus_bot/openai_budget.py). Reads the openai-ledger branch;
+        # if it cannot, ok=false and the bot runs on the free chain only (fail closed).
+        id: openai_ledger
+        timeout-minutes: 2
+        env:
+          OPENAI_LEDGER_DIR: ${{ runner.temp }}/openai-ledger
+        run: bash scripts/openai_ledger.sh load
       - name: Run bot
         id: run_bot
         shell: bash
@@ -112,6 +127,17 @@ jobs:
           # secrets, set FREE_MODE to 'false' and restore upstream's flag block from
           # No-Stream/nostreambot-metaculus-bot (same file); nothing else changes.
           FREE_MODE: 'true'
+          # ---- Hard-capped OpenAI link (Olly's FREE OpenAI credits, approved 2026-10-29). ----
+          # gpt-6.1-sol leads ensemble slot 4 while the budget allows; otherwise that slot's free
+          # chain answers unchanged. Caps live in code (metaculus_bot/openai_budget.py): $17.50
+          # lifetime to 6 Jan 2027, a per-run cap per tier, and a pacing curve that favours the
+          # main tournament. 'false' (or no OPENAI_API_KEY secret) = free chain only.
+          OPENAI_CAPPED_ENABLED: 'true'
+          # Under its own name so litellm and other SDKs never pick it up implicitly.
+          OPENAI_CAPPED_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BUDGET_TIER: 'market_pulse'
+          OPENAI_LEDGER_DIR: ${{ runner.temp }}/openai-ledger
+          OPENAI_LEDGER_OK: ${{ steps.openai_ledger.outputs.ok || 'false' }}
           # Degraded runs (a free model timed out) that still published every forecast and comment
           # exit green, so GitHub stops emailing 'Run failed'. Publish failures and crashes stay red.
           DEGRADED_PUBLISHED_EXIT_ZERO: 'true'
@@ -185,6 +211,13 @@ jobs:
           # Research archives for offline replay, as upstream.
           PERSIST_RESEARCH_ENABLED: 'true'
           RAW_RESEARCH_LOG_ENABLED: 'true'
+      - name: Save OpenAI spend ledger
+        if: always()
+        timeout-minutes: 3
+        env:
+          OPENAI_LEDGER_DIR: ${{ runner.temp }}/openai-ledger
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/openai_ledger.sh save
       - name: Upload research outputs
         if: always()
         timeout-minutes: 10
