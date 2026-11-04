@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from forecasting_tools import MetaculusQuestion, ReasonedPrediction
 
 from metaculus_bot.aggregation_strategies import AggregationStrategy
+from metaculus_bot.answering_model import fallback_models, short_model_name
 from metaculus_bot.comment.markers import (
     STACKED_MARKER_FALSE,
     STACKED_MARKER_TRUE,
@@ -42,6 +43,12 @@ def format_research_summary_with_models(
     model_names_by_index: dict[int, str] = {}
     for forecaster_number, forecast in enumerate(predictions, start=1):
         model_name = extract_model_display_name_from_reasoning(forecast.reasoning)
+        fallback = fallback_models(forecast.reasoning)
+        if fallback is not None:
+            # Name the model that answered, and say whose slot it stood in for. Square brackets,
+            # because the bullet parser's inline-name group cannot contain a ")".
+            answered, first_choice = fallback
+            model_name = f"{short_model_name(answered)} [fallback; first choice {short_model_name(first_choice)}]"
         if model_name is not None:
             model_names_by_index[forecaster_number] = model_name
     text = annotate_forecaster_bullets_with_models(base_text, model_names_by_index)
