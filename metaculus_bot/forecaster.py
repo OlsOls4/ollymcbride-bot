@@ -28,6 +28,7 @@ from metaculus_bot.aggregation_pipeline import AggregationPipeline
 from metaculus_bot.aggregation_strategies import (
     AggregationStrategy,
 )
+from metaculus_bot.answering_model import answering_model
 from metaculus_bot.close_margin import format_close_margin_marker
 from metaculus_bot.comment.formatting import (
     build_unified_explanation,
@@ -909,13 +910,16 @@ class TemplateForecaster(CompactLoggingForecastBot):
 
         prediction = await forecast_function(question, research, actual_llm)
         # Load-bearing: performance_analysis.parsing pulls per-model attribution from this "Model:" prefix.
-        prediction.reasoning = f"Model: {actual_llm.model}\n\n{prediction.reasoning}"
+        # It names the model that ANSWERED: a FREE_MODE fallback link, not the slot's first choice
+        # (answering_model.py; the fallback note right below still names the first choice).
+        answered_by = answering_model(prediction.reasoning, actual_llm.model)
+        prediction.reasoning = f"Model: {answered_by}\n\n{prediction.reasoning}"
 
         # No-ops when PROBABILISTIC_TOOLS_ENABLED is off (prod) or no block was emitted, so callers do not gate.
         computed_md = run_tools_for_forecaster(
             question=question,
             rationale=prediction.reasoning,
-            forecaster_id=actual_llm.model,
+            forecaster_id=answered_by,
         )
         if computed_md:
             prediction.reasoning = f"{prediction.reasoning}\n\n## Computed quantities\n{computed_md}"
