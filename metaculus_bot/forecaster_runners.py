@@ -33,6 +33,7 @@ from forecasting_tools.ai_models.ai_utils.openai_utils import VisionMessageData
 from forecasting_tools.data_models.questions import DateQuestion
 from pydantic import ValidationError
 
+from metaculus_bot.answering_model import answering_model
 from metaculus_bot.constants import (
     BINARY_PROB_MAX,
     BINARY_PROB_MIN,
@@ -251,21 +252,23 @@ async def run_binary_forecast(
         wall_timeout=forecaster_wall_timeout(),
         label="forecaster_binary",
     )
-    _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
+    # The model that answered (a FREE_MODE fallback link, else the slot's own): answering_model.py.
+    answered_by = answering_model(reasoning, forecaster_llm.model)
+    _log_llm_output(answered_by, question.id_of_question, reasoning)
 
     outcome = await extract_binary(
         reasoning,
         parser_llm,
         prompt_notes=BINARY_PARSE_NOTES,
         question_id=question.id_of_question,
-        model_name=forecaster_llm.model,
+        model_name=answered_by,
     )
 
     decimal_pred = max(BINARY_PROB_MIN, min(BINARY_PROB_MAX, outcome.value))
     logger.info(
         format_member_forecast_marker(
             question_id=question.id_of_question,
-            model=forecaster_llm.model,
+            model=answered_by,
             role=MEMBER_FORECAST_ROLE_MEMBER,
             qtype="binary",
             raw=outcome.value,
@@ -291,7 +294,9 @@ async def run_mc_forecast(
     reasoning = await invoke_with_broad_retry(
         lambda: forecaster_llm.invoke(forecaster_input), wall_timeout=forecaster_wall_timeout(), label="forecaster_mc"
     )
-    _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
+    # The model that answered (a FREE_MODE fallback link, else the slot's own): answering_model.py.
+    answered_by = answering_model(reasoning, forecaster_llm.model)
+    _log_llm_output(answered_by, question.id_of_question, reasoning)
 
     outcome = await extract_mc(
         reasoning,
@@ -299,7 +304,7 @@ async def run_mc_forecast(
         parser_llm,
         prompt_notes=build_mc_parse_notes(question.options),
         question_id=question.id_of_question,
-        model_name=forecaster_llm.model,
+        model_name=answered_by,
     )
     predicted_option_list = outcome.value.option_list
     try:
@@ -309,7 +314,7 @@ async def run_mc_forecast(
     logger.info(
         format_member_forecast_marker(
             question_id=question.id_of_question,
-            model=forecaster_llm.model,
+            model=answered_by,
             role=MEMBER_FORECAST_ROLE_MEMBER,
             qtype="multiple_choice",
             raw=outcome.value.declared_probs,  # the list is clamped on construction; see McForecast
@@ -352,7 +357,9 @@ async def run_numeric_forecast(
         label="forecaster_numeric",
     )
 
-    _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
+    # The model that answered (a FREE_MODE fallback link, else the slot's own): answering_model.py.
+    answered_by = answering_model(reasoning, forecaster_llm.model)
+    _log_llm_output(answered_by, question.id_of_question, reasoning)
 
     qid = question.id_of_question
     discrete_vote = await _resolve_discrete_vote(reasoning, parser_llm, forecaster_llm, qid)
@@ -364,9 +371,9 @@ async def run_numeric_forecast(
         parser_llm,
         prompt_notes=parse_notes,
         question_id=qid,
-        model_name=forecaster_llm.model,
+        model_name=answered_by,
     )
-    prediction = build_guarded_numeric_distribution(outcome.value, question, model_name=forecaster_llm.model)
+    prediction = build_guarded_numeric_distribution(outcome.value, question, model_name=answered_by)
     return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning), discrete_vote
 
 
@@ -402,16 +409,18 @@ async def run_date_forecast(
         wall_timeout=forecaster_wall_timeout(),
         label="forecaster_date",
     )
-    _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
+    # The model that answered (a FREE_MODE fallback link, else the slot's own): answering_model.py.
+    answered_by = answering_model(reasoning, forecaster_llm.model)
+    _log_llm_output(answered_by, question.id_of_question, reasoning)
 
     outcome = await extract_date(
         reasoning,
         parser_llm,
         prompt_notes=build_date_parse_notes(epoch_question),
         question_id=question.id_of_question,
-        model_name=forecaster_llm.model,
+        model_name=answered_by,
     )
-    prediction = build_guarded_numeric_distribution(outcome.value, epoch_question, model_name=forecaster_llm.model)
+    prediction = build_guarded_numeric_distribution(outcome.value, epoch_question, model_name=answered_by)
     return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
 
 
@@ -447,7 +456,9 @@ async def _run_pmf_forecast(
     reasoning = await invoke_with_broad_retry(
         lambda: forecaster_llm.invoke(forecaster_input), wall_timeout=forecaster_wall_timeout(), label=label
     )
-    _log_llm_output(forecaster_llm.model, view.id_of_question, reasoning)
+    # The model that answered (a FREE_MODE fallback link, else the slot's own): answering_model.py.
+    answered_by = answering_model(reasoning, forecaster_llm.model)
+    _log_llm_output(answered_by, view.id_of_question, reasoning)
 
     outcome = await extract_pmf(
         reasoning,
@@ -455,13 +466,13 @@ async def _run_pmf_forecast(
         parser_llm,
         prompt_notes=build_pmf_parse_notes(grid),
         question_id=view.id_of_question,
-        model_name=forecaster_llm.model,
+        model_name=answered_by,
     )
-    prediction = build_pmf_distribution(outcome.value.declared, view, model_name=forecaster_llm.model)
+    prediction = build_pmf_distribution(outcome.value.declared, view, model_name=answered_by)
     logger.info(
         format_member_forecast_marker(
             question_id=view.id_of_question,
-            model=forecaster_llm.model,
+            model=answered_by,
             role=MEMBER_FORECAST_ROLE_MEMBER,
             qtype=numeric_qtype(view),
             raw=outcome.value.declared,
