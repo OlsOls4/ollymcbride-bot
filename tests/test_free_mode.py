@@ -263,7 +263,10 @@ async def test_falls_back_on_429_and_annotates(monkeypatch: pytest.MonkeyPatch) 
     text = await chain.invoke("q")
     assert calls == ["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia_nim/moonshotai/kimi-k3"]
     assert text.endswith("PROBABILITY: 42%")
-    assert "answered by `nvidia_nim/moonshotai/kimi-k3`" in text.splitlines()[0]
+    assert text.splitlines()[0] == (
+        "_(Answered by `nvidia_nim/moonshotai/kimi-k3`: this slot's first-choice model "
+        "`openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` was unavailable.)_"
+    )
 
 
 async def test_primary_success_is_not_annotated(monkeypatch: pytest.MonkeyPatch) -> None:
