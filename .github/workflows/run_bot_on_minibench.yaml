@@ -72,6 +72,10 @@ jobs:
       # belt-and-suspenders rather than run-critical.
       - name: Install Playwright Chromium
         id: playwright_install
+        # 4 Nov 2026: skipped while gap-fill v2 is off (it is, and FREE_MODE forces it off in code),
+        # saving the install minutes on every run. To bring it back set the repository variable
+        # GAP_FILL_V2_ENABLED=true AND flip GAP_FILL_V2_ENABLED in the Run bot env below.
+        if: vars.GAP_FILL_V2_ENABLED == 'true'
         continue-on-error: true
         # 2026-08-19: apt hung here on four runs after the Azure Ubuntu mirror failed
         # over, each burning the full 300-min job cap while holding the concurrency
@@ -206,6 +210,28 @@ jobs:
           # Research archives for offline replay, as upstream.
           PERSIST_RESEARCH_ENABLED: 'true'
           RAW_RESEARCH_LOG_ENABLED: 'true'
+      - name: Flag dropped forecaster slots
+        # 4 Nov 2026: a published-but-degraded run exits green (DEGRADED_PUBLISHED_EXIT_ZERO), so
+        # make dropped slots visible: a ::warning:: annotation plus a step-summary line whenever a
+        # forecaster slot hit its soft deadline or a model failed systematically. Never fails the job.
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          logs=$(ls run_logs/*.log 2>/dev/null || true)
+          if [ -z "$logs" ]; then exit 0; fi
+          sd=$(cat $logs | grep -c 'SOFT_DEADLINE: forecaster' || true)
+          members=$(cat $logs | grep -c 'MEMBER_FORECAST: .*role=member' || true)
+          sys=$(cat $logs | sed -n 's/.*SYSTEMATIC_FORECASTER_FAILURE: model=\([^ ]*\) dropped_on_questions=\([0-9]*\).*/\1 (\2 questions)/p' | sort -u | paste -sd ';' - || true)
+          if [ "${sd:-0}" -gt 0 ]; then
+            echo "::warning title=Forecaster slots dropped::${sd} forecaster slot(s) hit the soft deadline and were dropped (${members} member forecasts made); published with the remaining slots."
+            echo "- :warning: ${sd} forecaster slot(s) dropped at the soft deadline (${members} member forecasts made)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$sys" ]; then
+            echo "::warning title=Systematic forecaster failure::${sys}"
+            echo "- :warning: Systematic forecaster failure: ${sys}" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Save OpenAI spend ledger
         if: always()
         timeout-minutes: 3
