@@ -121,6 +121,26 @@ MODEL_CUTOFFS: dict[str, ModelCutoff] = {
         "release-date proxy",
         "released 2026-06-04 (https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b/modelcard)",
     ),
+    # 4 Nov 2026 roster additions (release-date proxies; none publishes a training cutoff).
+    "cloudflare/@cf/nvidia/nemotron-3-120b-a12b": ModelCutoff(
+        date(2026, 3, 11),
+        "release-date proxy",
+        "Nemotron 3 Super 120B-A12B, released 2026-03-11 "
+        "(https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b/modelcard)",
+    ),
+    "cloudflare/@cf/zai-org/glm-4.7-flash": ModelCutoff(
+        date(2026, 1, 19),
+        "release-date proxy",
+        "none published; released 2026-01-19 (https://www.zhipuai.cn/en/news/148)",
+    ),
+    "zai/glm-4.7-flash": ModelCutoff(
+        date(2026, 1, 19),
+        "release-date proxy",
+        "none published; released 2026-01-19 (https://www.zhipuai.cn/en/news/148)",
+    ),
+    "zai/glm-4.5-flash": ModelCutoff(
+        date(2025, 7, 28), "release-date proxy", "none published; GLM-4.5 family released 2025-07-28 (z.ai blog)"
+    ),
     "groq/qwen/qwen3.8-27b": ModelCutoff(
         date(2026, 8, 15), "release-date proxy", "none published; released 2026-08-15 (huggingface.co/Qwen)"
     ),
