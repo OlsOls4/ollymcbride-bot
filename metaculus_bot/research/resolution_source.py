@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import Counter
 from dataclasses import replace
@@ -65,8 +66,40 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def select_fetchable_urls(criteria: str | None, fine_print: str | None) -> list[str]:
+_LIST_ITEM_RE: re.Pattern[str] = re.compile(r"^\s*(?:[*+\-\u2022]|\d+[.)])\s+")
+
+
+def restrict_to_group_label(text: str, label: str | None) -> str:
+    """Drop list items that cite sources for OTHER subquestions of a group question.
+
+    A group's resolution criteria are shared by every subquestion, and usually list one source
+    per subquestion ("* Apple ... ([source](...AAPL...))", "* AMD ... ([source](...AMD...))"). Seen
+    on Market Pulse (4 Nov 2026 review): every company's subquestion fetched every company's page.
+    When ``label`` (the subquestion's own label, e.g. "Nvidia") appears on at least one list item
+    that carries a URL, list items with a URL that do NOT mention the label are removed; prose
+    lines and every other line are kept. Without a label, or when no URL-bearing item names it,
+    the text is returned unchanged (fail open: the old behaviour).
+    """
+    if not isinstance(label, str) or not label.strip():
+        return text
+    pattern = re.compile(r"(?<!\w)" + re.escape(label.strip()) + r"(?!\w)", re.IGNORECASE)
+    lines = text.splitlines()
+    url_items = [line for line in lines if _LIST_ITEM_RE.match(line) and extract_source_urls(line)]
+    if not any(pattern.search(line) for line in url_items):
+        return text
+    kept = [
+        line
+        for line in lines
+        if not (_LIST_ITEM_RE.match(line) and extract_source_urls(line) and not pattern.search(line))
+    ]
+    return "\n".join(kept)
+
+
+def select_fetchable_urls(criteria: str | None, fine_print: str | None, label: str | None = None) -> list[str]:
     """Compose the fetchable URL list from a question's resolution criteria + fine print.
+
+    ``label`` is a group subquestion's own label; with it, sources cited only for sibling
+    subquestions are left out (:func:`restrict_to_group_label`).
 
     Skips self-refs (the question platform's own site: metaculus.com or
     competitions.mantic.com), FRED, and Yahoo ticker URLs — those either add no new
@@ -75,7 +108,7 @@ def select_fetchable_urls(criteria: str | None, fine_print: str | None) -> list[
     often list their own page first) doesn't starve the real sources out of the
     fetch budget.
     """
-    combined = f"{criteria or ''}\n\n{fine_print or ''}"
+    combined = restrict_to_group_label(f"{criteria or ''}\n\n{fine_print or ''}", label)
     urls = extract_source_urls(combined)
     filtered = [u for u in urls if not (is_metaculus_self_ref(u) or is_fred_url(u) or is_yahoo_ticker_url(u))]
     return filtered[:RESOLUTION_SOURCE_MAX_URLS]
@@ -515,7 +548,9 @@ def resolution_source_provider(is_benchmarking: bool = False, *, fast_path: bool
         if not env_flag_enabled(RESOLUTION_SOURCE_ENABLED_ENV):
             return ""
 
-        urls = select_fetchable_urls(question.resolution_criteria, question.fine_print)
+        urls = select_fetchable_urls(
+            question.resolution_criteria, question.fine_print, getattr(question, "group_question_option", None)
+        )
         if not urls:
             return ""
 
