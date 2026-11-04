@@ -226,7 +226,9 @@ def _classify_and_mark(model: str, exc: Exception) -> str:
             _EXHAUSTED.add(quota_bucket(model))
             return "daily_quota"
         return "rate_limited"
-    if status == 404 or any(cue in msg for cue in _MODEL_GONE_CUES):
+    # 404 (unknown to this key) and 410 (retired by the provider, e.g. NIM kimi-k3 / glm-5.3 in
+    # Nov 2026) are both permanent for the run: skip the model straight away from now on.
+    if status in (404, 410) or any(cue in msg for cue in _MODEL_GONE_CUES):
         _EXHAUSTED.add(model)
         return "model_unavailable"
     if status is not None and status >= 500:
@@ -517,7 +519,7 @@ def build_free_chain(
 
 
 # Slot (0-based) whose chain gets the hard-capped OpenAI link in front when it is opted in
-# (metaculus_bot/openai_budget.py). Slot 4's primary, NIM glm-5.3, is the one that times out most.
+# (metaculus_bot/openai_budget.py). Slot 4's free chain is the one whose lead had the worst record.
 FREE_MODE_OPENAI_SLOT: int = 3
 
 
