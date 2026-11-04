@@ -36,9 +36,9 @@ from pydantic import ValidationError
 from metaculus_bot.constants import (
     BINARY_PROB_MAX,
     BINARY_PROB_MIN,
-    FORECASTER_SOFT_DEADLINE,
     PMF_ABOVE_RANGE_KEY,
     PMF_BELOW_RANGE_KEY,
+    forecaster_wall_timeout,
 )
 from metaculus_bot.exceptions import UnitMismatchError
 from metaculus_bot.llm_retry import invoke_with_broad_retry
@@ -248,7 +248,7 @@ async def run_binary_forecast(
     # The forecasters' SOLE retry layer (allowed_tries=1 in llm_configs.py); the 30s gate is in llm_retry.py.
     reasoning = await invoke_with_broad_retry(
         lambda: forecaster_llm.invoke(forecaster_input),
-        wall_timeout=FORECASTER_SOFT_DEADLINE,
+        wall_timeout=forecaster_wall_timeout(),
         label="forecaster_binary",
     )
     _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
@@ -289,7 +289,7 @@ async def run_mc_forecast(
     forecaster_input = _forecaster_input(prompt, chart_b64)
     # Broad, 30s-gated retry — see run_binary_forecast for the rationale.
     reasoning = await invoke_with_broad_retry(
-        lambda: forecaster_llm.invoke(forecaster_input), wall_timeout=FORECASTER_SOFT_DEADLINE, label="forecaster_mc"
+        lambda: forecaster_llm.invoke(forecaster_input), wall_timeout=forecaster_wall_timeout(), label="forecaster_mc"
     )
     _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
 
@@ -348,7 +348,7 @@ async def run_numeric_forecast(
     # Broad, 30s-gated retry — see run_binary_forecast for the rationale.
     reasoning = await invoke_with_broad_retry(
         lambda: forecaster_llm.invoke(forecaster_input),
-        wall_timeout=FORECASTER_SOFT_DEADLINE,
+        wall_timeout=forecaster_wall_timeout(),
         label="forecaster_numeric",
     )
 
@@ -399,7 +399,7 @@ async def run_date_forecast(
     # Broad, 30s-gated retry — see run_binary_forecast for the rationale.
     reasoning = await invoke_with_broad_retry(
         lambda: forecaster_llm.invoke(forecaster_input),
-        wall_timeout=FORECASTER_SOFT_DEADLINE,
+        wall_timeout=forecaster_wall_timeout(),
         label="forecaster_date",
     )
     _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
@@ -445,7 +445,7 @@ async def _run_pmf_forecast(
     forecaster_input = _forecaster_input(prompt, chart_b64)
     # Broad, 30s-gated retry — see run_binary_forecast for the rationale.
     reasoning = await invoke_with_broad_retry(
-        lambda: forecaster_llm.invoke(forecaster_input), wall_timeout=FORECASTER_SOFT_DEADLINE, label=label
+        lambda: forecaster_llm.invoke(forecaster_input), wall_timeout=forecaster_wall_timeout(), label=label
     )
     _log_llm_output(forecaster_llm.model, view.id_of_question, reasoning)
 
