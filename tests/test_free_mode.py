@@ -48,6 +48,9 @@ _PAID_FLAGS = [
 @pytest.fixture(autouse=True)
 def _fresh_free_state(monkeypatch: pytest.MonkeyPatch):
     free_mode.reset_free_mode_state()
+    # Hermetic: optional-provider keys from the host environment must not add links to a chain.
+    for key in ("GROQ_API_KEY", "MISTRAL_API_KEY", "ZAI_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+        monkeypatch.delenv(key, raising=False)
     # No pacing sleeps in unit tests.
     monkeypatch.setattr(free_mode, "FREE_MODE_MIN_INTERVAL_S", dict.fromkeys(free_mode.FREE_MODE_MIN_INTERVAL_S, 0.0))
     yield
@@ -183,6 +186,8 @@ def test_nim_links_cap_max_tokens(free_env: pytest.MonkeyPatch) -> None:
 
 def test_forecaster_llms_follow_ensemble_size(free_env: pytest.MonkeyPatch) -> None:
     free_env.setenv("FREE_MODE_ENSEMBLE_SIZE", "3")
+    free_env.setenv("CLOUDFLARE_API_TOKEN", "cf-test")  # slot 1 leads on Cloudflare since 4 Nov 2026
+    free_env.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
     llms = build_free_forecaster_llms()
     assert [llm.model for llm in llms] == [chain[0] for chain in FREE_MODE_FORECASTER_CHAINS[:3]]
     assert all(isinstance(llm, FreeModelChainLlm) and llm.annotate_fallback for llm in llms)
@@ -466,12 +471,42 @@ def test_groq_daily_cap_marks_bucket_exhausted() -> None:
     assert "groq" in free_mode._EXHAUSTED
 
 
-def test_optional_key_providers_sit_in_the_tail_never_lead_or_floor() -> None:
+def test_optional_key_providers_never_floor_and_every_chain_keeps_a_core_link() -> None:
+    """Optional-key providers may lead since 4 Nov 2026 (Cloudflare / Z.ai keys are set in every
+    run workflow and their models passed health run 41799726145), but never as the floor, and every
+    chain keeps a non-floor link on a core provider so a missing optional key never leaves a slot
+    with nothing but Flash-Lite."""
     optional = tuple(f"{p}/" for p in FREE_MODE_OPTIONAL_PROVIDERS)
     for chain in FREE_MODE_FORECASTER_CHAINS:
-        assert not chain[0].startswith(optional)
         assert not chain[-1].startswith(optional)
-        assert all(i >= 2 for i, m in enumerate(chain) if m.startswith(optional))
+        assert not chain[-2].startswith(optional)
+        assert any(not m.startswith(optional) for m in chain[:-2])
+
+
+def test_retired_models_are_out_of_the_default_slots() -> None:
+    """4 Nov 2026: NIM kimi-k3 / glm-5.3 answer 410, nemotron-3-super 404, glm-5.3-flash and
+    deepseek-v4.1-flash time out on every call (health run 41799726145 + live logs)."""
+    every = {m for chain in FREE_MODE_FORECASTER_CHAINS for m in chain}
+    for dead in (
+        "nvidia_nim/moonshotai/kimi-k3",
+        "nvidia_nim/z-ai/glm-5.3",
+        "nvidia_nim/z-ai/glm-5.3-flash",
+        "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
+        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+    ):
+        assert dead not in every
+        assert_free_model(dead)  # still allow-listed: it can return once a health run is green
+
+
+def test_slots_one_and_two_share_no_non_floor_model() -> None:
+    first, second = FREE_MODE_FORECASTER_CHAINS[0], FREE_MODE_FORECASTER_CHAINS[1]
+    assert not set(first[:-2]) & set(second[:-2])
+
+
+def test_http_410_marks_the_model_gone_for_the_run() -> None:
+    exc = litellm.APIError(status_code=410, message="Gone", llm_provider="nvidia_nim", model="m")
+    assert free_mode._classify_and_mark("nvidia_nim/moonshotai/kimi-k3", exc) == "model_unavailable"
+    assert "nvidia_nim/moonshotai/kimi-k3" in free_mode._EXHAUSTED
 
 
 # --- 2026-10-13 serving fixes: denied models, budgets, streaming, retries, new providers ---
