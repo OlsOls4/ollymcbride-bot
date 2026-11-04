@@ -969,42 +969,44 @@ FREE_MODE_DENIED_MODELS: dict[str, str] = {
 # glm-4.7-flash 429 (code 1305 overloaded) failed, so their chain slots were swapped for links that
 # passed the same run (NIM nemotron-3-super, Cloudflare gpt-oss-120b, Groq gpt-oss-120b). They stay
 # allow-listed and can return once a health run shows them OK.
+# 2026-11-04 revision (docs/free-mode.md "4 Nov review fixes"): free_keys_health.yaml run
+# 41799726145 and ~145 live run logs showed NIM kimi-k3 and glm-5.3 answering HTTP 410 (gone),
+# NIM nemotron-3-super 404, and NIM glm-5.3-flash / deepseek-v4.1-flash timing out on every call
+# (glm-5.3-flash never served once). All five are out of slots 1-4; they stay allow-listed (NIM is
+# not an allow-listed provider) and can return once a health run shows them OK. Slots 1 and 2 no
+# longer share a tail, so one Cloudflare gpt-oss-120b outage cannot turn both into the same model.
+# Slot 4 is led by the capped OpenAI link when it is opted in (free_mode.FREE_MODE_OPENAI_SLOT).
 FREE_MODE_FORECASTER_CHAINS: tuple[tuple[str, ...], ...] = (
     (
-        "nvidia_nim/moonshotai/kimi-k3",
-        "nvidia_nim/z-ai/glm-5.3-flash",
-        "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
         "cloudflare/@cf/openai/gpt-oss-120b",
-        "gemini/gemini-3.5-flash-lite",
-        "gemini/gemini-3.1-flash-lite",
-    ),
-    (
-        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
-        "cloudflare/@cf/openai/gpt-oss-120b",
-        "groq/openai/gpt-oss-120b",
-        "gemini/gemini-3.5-flash-lite",
-        "gemini/gemini-3.1-flash-lite",
-    ),
-    (
-        "gemini/gemini-3.8-flash",
-        "nvidia_nim/z-ai/glm-5.3-flash",
         "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b",
         "groq/openai/gpt-oss-120b",
         "gemini/gemini-3.5-flash-lite",
         "gemini/gemini-3.1-flash-lite",
     ),
     (
-        "nvidia_nim/z-ai/glm-5.3",
-        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "cloudflare/@cf/nvidia/nemotron-3-120b-a12b",
+        "zai/glm-4.5-flash",
+        "gemini/gemini-3.5-flash-lite",
+        "gemini/gemini-3.1-flash-lite",
+    ),
+    (
+        "gemini/gemini-3.8-flash",
+        "cloudflare/@cf/zai-org/glm-4.7-flash",
+        "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b",
+        "gemini/gemini-3.5-flash-lite",
+        "gemini/gemini-3.1-flash-lite",
+    ),
+    (
+        "zai/glm-4.7-flash",
         "cloudflare/@cf/openai/gpt-oss-120b",
-        "groq/openai/gpt-oss-120b",
+        "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b",
         "gemini/gemini-3.5-flash-lite",
         "gemini/gemini-3.1-flash-lite",
     ),
     (
         "openrouter/apodex/apodex-1.1-mini:free",
-        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
         "openrouter/dots-studio/dots-3-note-preview:free",
         "groq/openai/gpt-oss-20b",
         "gemini/gemini-3.5-flash-lite",
