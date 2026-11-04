@@ -7,6 +7,7 @@ instead re-forecasts on a fixed, rules-based clock read from the API payload's `
 
 - never forecast (or the standing forecast was withdrawn)          -> forecast now
 - closes within ~24 h and the last forecast is more than ~6 h old  -> re-forecast
+- closes within ~4 h and the last forecast is more than ~2 h old   -> re-forecast (final update)
 - the last forecast is more than ~72 h old                         -> re-forecast (fallback)
 - otherwise                                                         -> leave it standing
 
@@ -44,7 +45,12 @@ logger = logging.getLogger(__name__)
 MARKET_PULSE_STALE_AFTER: timedelta = timedelta(hours=72)
 MARKET_PULSE_CLOSING_WINDOW: timedelta = timedelta(hours=24)
 MARKET_PULSE_CLOSING_STALE_AFTER: timedelta = timedelta(hours=6)
-# Subtracted from both age thresholds so a 6-hourly schedule actually meets them (module docstring).
+# Final pre-close update (4 Nov 2026): subquestions close ~10:00-11:00 UTC and the 6-hourly runs
+# last update them at ~06:30, 3.5-4.5 h before close. A daily 08:51 UTC run (workflow cron) finds
+# them inside this window with a ~2.5 h old forecast and updates them ~1-2 h before close.
+MARKET_PULSE_FINAL_WINDOW: timedelta = timedelta(hours=4)
+MARKET_PULSE_FINAL_STALE_AFTER: timedelta = timedelta(hours=2)
+# Subtracted from every age threshold so a 6-hourly schedule actually meets them (module docstring).
 MARKET_PULSE_SCHEDULE_SLACK: timedelta = timedelta(minutes=30)
 
 # Per-run cap, so one run stays inside free-tier rate limits and the job's time cap. 65
@@ -160,12 +166,14 @@ def classify_for_refresh(question: MetaculusQuestion, now: datetime) -> tuple[Re
     if last is None:
         return "new", None
     age = now - last
-    if (
-        close_time is not None
-        and close_time - now <= MARKET_PULSE_CLOSING_WINDOW
-        and age > MARKET_PULSE_CLOSING_STALE_AFTER - MARKET_PULSE_SCHEDULE_SLACK
-    ):
-        return "closing", age
+    if close_time is not None:
+        to_close = close_time - now
+        closing_due = MARKET_PULSE_CLOSING_STALE_AFTER - MARKET_PULSE_SCHEDULE_SLACK
+        final_due = MARKET_PULSE_FINAL_STALE_AFTER - MARKET_PULSE_SCHEDULE_SLACK
+        if to_close <= MARKET_PULSE_CLOSING_WINDOW and age > closing_due:
+            return "closing", age
+        if to_close <= MARKET_PULSE_FINAL_WINDOW and age > final_due:
+            return "closing", age
     if age > MARKET_PULSE_STALE_AFTER - MARKET_PULSE_SCHEDULE_SLACK:
         return "stale", age
     return "fresh", age
