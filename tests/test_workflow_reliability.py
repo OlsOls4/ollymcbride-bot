@@ -316,10 +316,15 @@ class TestScheduledBotCadence:
 
     def test_market_pulse_runs_every_six_hours_off_the_hour(self) -> None:
         crons = self.scheduled[_MARKET_PULSE_WORKFLOW]
-        assert len(crons) >= 2, "a backup entry covers GitHub dropping a schedule under load"
+        six_hourly = [cron for cron in crons if cron.split()[1] == "*/6"]
+        assert len(six_hourly) >= 2, "a backup entry covers GitHub dropping a schedule under load"
         for cron in crons:
             minute, hour, day, month, weekday = cron.split()
-            assert (hour, day, month, weekday) == ("*/6", "*", "*", "*"), cron
+            # 4 Nov 2026: one extra DAILY entry gives ~10:00-11:00 UTC closes a final pre-close update.
+            if hour != "*/6":
+                assert hour.isdigit(), cron
+                assert 6 < int(hour) < 10, cron
+            assert (day, month, weekday) == ("*", "*", "*"), cron
             assert minute.isdigit(), cron
             assert int(minute) != 0, cron
         assert "--mode market_pulse" in _named_step(_workflow(_MARKET_PULSE_WORKFLOW), "Run bot")["run"]
