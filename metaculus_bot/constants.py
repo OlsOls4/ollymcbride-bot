@@ -1061,6 +1061,20 @@ FREE_MODE_MIN_INTERVAL_S: dict[str, float] = {
 FREE_MODE_FORECASTER_SOFT_DEADLINE_S: int = 900
 # Parser/structured-output calls after the chain answers also run inside the soft deadline.
 FREE_MODE_FORECASTER_CHAIN_BUDGET_S: float = 780.0
+# Per-attempt wall cap the forecaster runners hand ``invoke_with_broad_retry`` in FREE_MODE: the
+# chain budget plus a little slack, so the paid-path FORECASTER_SOFT_DEADLINE (600 s) can no longer
+# kill a free chain before its Flash-Lite floor (reserved after ~660 s) answers. Must stay below
+# FREE_MODE_FORECASTER_SOFT_DEADLINE_S (pinned by tests/test_free_mode_wall_timeout.py). Added 4 Nov 2026.
+FREE_MODE_FORECASTER_WALL_TIMEOUT_S: float = FREE_MODE_FORECASTER_CHAIN_BUDGET_S + 20.0
+
+
+def forecaster_wall_timeout() -> float:
+    """Per-attempt wall cap for one forecaster LLM call: free-mode chain budget + slack, else 600 s."""
+    if free_mode_enabled():
+        return FREE_MODE_FORECASTER_WALL_TIMEOUT_S
+    return float(FORECASTER_SOFT_DEADLINE)
+
+
 FREE_MODE_FLOOR_RESERVE_S: float = 120.0
 FREE_MODE_MIN_LINK_S: float = 45.0
 FREE_MODE_FORECASTER_LINK_TIMEOUT_S: float = 240.0
