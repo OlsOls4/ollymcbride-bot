@@ -39,6 +39,7 @@ import litellm
 from forecasting_tools import GeneralLlm
 from forecasting_tools.ai_models.ai_utils.response_types import TextTokenCostResponse
 
+from metaculus_bot.answering_model import format_fallback_note
 from metaculus_bot.constants import (
     CLOUDFLARE_API_TOKEN_ENV,
     FREE_MODE_CLOUDFLARE_FREE_TIER_MODELS,
@@ -292,10 +293,11 @@ def _link_timeout_s(link: GeneralLlm) -> float:
 class FreeModelChainLlm(GeneralLlm):
     """A ``GeneralLlm`` that tries each free link in order until one answers.
 
-    ``model`` reports the slot's PRIMARY link so roster names, the comment's ``Model:`` line and
-    the telemetry stay stable per slot. When a fallback link answers a forecaster slot, the reply
-    is prefixed with one line naming the model that actually answered, so the published comment
-    never misattributes a forecast.
+    ``model`` reports the slot's PRIMARY link so roster names and slot telemetry stay stable per
+    slot. When a fallback link answers a forecaster slot, the reply is prefixed with one line
+    (``answering_model.FALLBACK_NOTE_TEMPLATE``) naming the model that actually answered; the
+    comment's ``Model:`` line, summary bullet and ``MEMBER_FORECAST`` log lines read it from there,
+    so a forecast is never credited to the slot's first choice.
 
     With ``budget_s`` set (forecaster slots) the whole chain finishes inside that many seconds:
     each non-final link may use at most ``remaining - FREE_MODE_FLOOR_RESERVE_S`` (and is skipped
@@ -415,10 +417,7 @@ class FreeModelChainLlm(GeneralLlm):
                 failures.append(f"{link.model}: {reason}")
                 continue
             if idx > 0 and self.annotate_fallback:
-                text = (
-                    f"_(Free-mode fallback: answered by `{link.model}`; slot primary `{self.model}` was unavailable.)_"
-                    f"\n\n{text}"
-                )
+                text = f"{format_fallback_note(link.model, self.model)}\n\n{text}"
             return text
         raise FreeChainExhaustedError(f"FREE_MODE chain role={self.role} exhausted: " + "; ".join(failures))
 
