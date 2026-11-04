@@ -132,6 +132,25 @@ class TestRefreshClock:
         assert classify_for_refresh(closing, closing_last + timedelta(hours=4))[0] == "fresh"
         assert classify_for_refresh(closing, closing_last + timedelta(hours=6))[0] == "closing"
 
+    @pytest.mark.parametrize(
+        ("close_in_h", "age_h", "expected"),
+        [
+            (1.15, 2.4, "closing"),  # 08:51 UTC run, 10:00 close, last update from the 06:13 run
+            (2.15, 2.4, "closing"),  # same run, 11:00 close
+            (3.2, 0.4, "fresh"),  # 06:47 backup right after the 06:13 update: nothing to do
+            (1.15, 1.0, "fresh"),  # a final update already stands
+            (5.0, 2.4, "fresh"),  # outside the final window, under the 6 h closing rule
+        ],
+    )
+    def test_final_pre_close_update(self, close_in_h: float, age_h: float, expected: str) -> None:
+        """4 Nov 2026: the daily 08:51 UTC run gives ~10:00-11:00 UTC closes a last update ~1-2 h out."""
+        question = _by_qid(_fetch_open_questions()[0])[60004]
+        last = last_forecast_time(question, _now())
+        assert last is not None
+        now = last + timedelta(hours=age_h)
+        question.close_time = now + timedelta(hours=close_in_h)
+        assert classify_for_refresh(question, now)[0] == expected
+
     def test_past_close_is_never_selected(self) -> None:
         question = _by_qid(_fetch_open_questions()[0])[60002]
         assert classify_for_refresh(question, _now() + timedelta(hours=21))[0] == "closed"
