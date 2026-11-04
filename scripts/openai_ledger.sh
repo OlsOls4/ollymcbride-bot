@@ -33,10 +33,18 @@ load() {
       return 0
     fi
   elif [ "$rc" -eq 2 ]; then
-    # Branch does not exist yet: start an empty ledger (first ever run).
-    mkdir -p "$DIR" && git -C "$DIR" init --quiet -b "$BRANCH" && git -C "$DIR" remote add origin "$REPO_URL"
-    echo "OpenAI ledger: new (no spend recorded yet)"
-    out ok=true
+    # Branch missing. It has existed since the first spend (Oct 2026), so a missing branch now
+    # means it was deleted or renamed, or the wrong repo is being read: starting again from $0
+    # would reset the lifetime cap, so this FAILS CLOSED (4 Nov 2026). Only an explicit
+    # OPENAI_LEDGER_BOOTSTRAP=true (a deliberate first run on a fresh fork) starts an empty one.
+    if [ "${OPENAI_LEDGER_BOOTSTRAP:-}" = "true" ]; then
+      mkdir -p "$DIR" && git -C "$DIR" init --quiet -b "$BRANCH" && git -C "$DIR" remote add origin "$REPO_URL"
+      echo "OpenAI ledger: new (OPENAI_LEDGER_BOOTSTRAP=true; no spend recorded yet)"
+      out ok=true
+      return 0
+    fi
+    echo "::warning title=OpenAI ledger missing::The ${BRANCH} branch does not exist; OpenAI link off this run (free chain only). Set OPENAI_LEDGER_BOOTSTRAP=true only for a deliberate first run."
+    out ok=false
     return 0
   fi
   echo "::warning title=OpenAI ledger unavailable::Could not read the ${BRANCH} branch; OpenAI link off this run (free chain only)."
